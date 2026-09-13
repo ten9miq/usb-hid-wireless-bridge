@@ -1,0 +1,23 @@
+Program Information
+ name:              remapper_dual_a
+ binary start:      0x10000000
+ binary end:        0x10031a68
+
+Fixed Pin Information
+ none
+
+Build Information
+ sdk version:       2.1.1
+ pico_board:        remapper
+ boot2_name:        boot2_w25q080
+ build date:        May 24 2026
+ build attributes:  Release
+
+Device Information
+ type:              RP2040
+ revision:          B2
+ flash size:        2048K
+ flash id:          0xE66568714F400C23
+
+Metadata Blocks
+ none
