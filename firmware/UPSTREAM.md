@@ -56,3 +56,9 @@ enumeration.  The `remapper_dual_b` target now selects `HID_PROTOCOL_REPORT`
 before USB host initialization so every device is consumed according to its
 full report descriptor.  This keeps multi-interface and multi-collection
 devices generic and avoids a receiver- or keyboard-specific VID/PID quirk.
+
+The split Boot Keyboard interface caches the last five-bit LED output state,
+forwards a normalized one-byte value into the existing usage-based output
+mapping, and returns the same value for an Output GET_REPORT request.  This
+keeps Num Lock and the other standard LED usages available across physical
+keyboard enumeration without adding device-specific handling.

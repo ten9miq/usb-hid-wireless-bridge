@@ -14,5 +14,7 @@ Boot Mouse別interfaceにした次段階の検証用です。B側は既存の
 現行版は、動作確認済みの3 byte mouse reportへwheelを末尾追加した4 byte版です。
 Keyboard descriptorは標準Boot範囲`0x00`–`0x65`を宣言し、範囲内のテンキー
 usage `0x59`–`0x63`を6KRO arrayで送信します。
+Keyboard Outputは5 LED bitsを保持し、NumLockなどをB側の物理キーボードへ
+既存のusage-based mapping経路で転送します。
 
 書き込み前に、保存済みの購入時バックアップから復元できることを確認してください。

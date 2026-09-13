@@ -112,6 +112,13 @@ const uint8_t* configuration_descriptors[] = {
     configuration_descriptor5,
 };
 
+#ifdef WBT2_BOOT_INTERFACES
+// Preserve the last host LED state independently of physical-keyboard
+// enumeration.  The mapping engine will replay this state when a keyboard
+// output descriptor appears or reappears on the B side.
+static uint8_t keyboard_led_state = 0;
+#endif
+
 char const* string_desc_arr[] = {
     (const char[]){ 0x09, 0x04 },  // 0: is supported language is English (0x0409)
 #ifdef PICO_RP2350
@@ -219,6 +226,10 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer, uint16_t reqlen) {
 #ifdef WBT2_BOOT_INTERFACES
     if (our_descriptor->idx == 0) {
+        if ((itf == 0) && (report_type == HID_REPORT_TYPE_OUTPUT) && (reqlen >= 1)) {
+            buffer[0] = keyboard_led_state;
+            return 1;
+        }
         return (itf == 3) ? handle_get_report1(report_id, buffer, reqlen) : 0;
     }
 #endif
@@ -232,9 +243,11 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
 #ifdef WBT2_BOOT_INTERFACES
     if (our_descriptor->idx == 0) {
-        if (itf == 0) {
+        if ((itf == 0) && (bufsize >= 1)) {
             // The Boot Keyboard LED output has no Report ID on the wire.
-            handle_set_report0(REPORT_ID_LEDS, buffer, bufsize);
+            // Keep all five standard LED usages and discard padding bits.
+            keyboard_led_state = buffer[0] & 0x1F;
+            handle_set_report0(REPORT_ID_LEDS, &keyboard_led_state, 1);
         } else if (itf == 3) {
             handle_set_report1(report_id, buffer, bufsize);
         }

@@ -45,3 +45,9 @@ TinyUSB hostは既定ではBoot subclassのKeyboard/Mouseを列挙時にBoot pro
 B側は列挙前に`tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT)`を指定し、VID/PIDに依存せず各HID interfaceのreport descriptorどおりに受信します。既存コードは最大16 HID instanceを確保し、descriptor取得時とreport受信時の両方で同じTinyUSB `instance`をA側へ渡すため、複数interfaceは`dev_addr + instance`ごとに分離されます。同一interface内の複数collectionはReport IDごとのusage mapとして解析されます。
 
 この変更でデバイス固有quirkは追加しません。実機確認では、HID RemapperのMonitorにKeyboard/Keypad usage `0x00070059`–`0x00070063`とnavigation usageが出ることを先に確認し、その後WBT2-V4経由のRaw Inputと照合します。Monitorにも出ない場合は、B側が受信したreport descriptorとreport byte列の採取が次の切り分けになります。
+
+## NumLock LED同期
+
+WBT2側からのKeyboard Output reportはA側interface 0でReport IDなしの1 byteとして受信し、下位5 bit（Num Lock、Caps Lock、Scroll Lock、Compose、Kana）を保持します。保持値は内部`REPORT_ID_LEDS`へ正規化して渡され、接続中の各物理キーボードのOutput descriptorに対応するreportへ再構成されてB側の`tuh_hid_set_report()`から送信されます。
+
+A側は最後に受信したLED byteをキャッシュし、GET_REPORT(Output)にも同じ値を返します。物理キーボードが後から列挙または再列挙された場合も、内部LED入力状態が残るため次のmapping処理でそのキーボード用Output reportへ反映されます。Boot Keyboard descriptorも5 LED bits + 3 padding bitsへ揃えています。この処理はLED Usage Pageに基づく既存の汎用転送を使い、VID/PID分岐は追加しません。

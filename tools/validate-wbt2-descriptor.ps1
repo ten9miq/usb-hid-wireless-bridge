@@ -159,6 +159,10 @@ $expectedKeyboardArray = '05 07 19 00 29 65 15 00 25 65 75 08 95 06 81 00'
 if (-not $bootKeyboardHex.Contains($expectedKeyboardArray)) {
     throw 'Boot Keyboard array must use matching Usage/Logical ranges 0x00-0x65 and six 8-bit slots'
 }
+$expectedKeyboardLeds = '05 08 19 01 29 05 15 00 25 01 75 01 95 05 91 02 95 01 75 03 91 03'
+if (-not $bootKeyboardHex.Contains($expectedKeyboardLeds)) {
+    throw 'Boot Keyboard output must expose five LED bits followed by three padding bits'
+}
 
 $bootMouseBytes = Get-IdlessDescriptorBytes 'boot_mouse_report_descriptor'
 $bootMouseHex = ConvertTo-HexSequence $bootMouseBytes
@@ -170,6 +174,13 @@ if (-not $bootMouseHex.Contains($expectedMouseAxes)) {
 $mainSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'main.cc') -Raw
 if ($mainSource -notmatch 'tud_hid_n_report\(interface,\s*0,\s*report_with_id\s*\+\s*1,\s*len\s*-\s*1\)') {
     throw 'The split interfaces must send their complete payload without a Report ID'
+}
+
+$tinyUsbSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'tinyusb_stuff.cc') -Raw
+if (($tinyUsbSource -notmatch 'keyboard_led_state\s*=\s*buffer\[0\]\s*&\s*0x1F') -or
+    ($tinyUsbSource -notmatch 'handle_set_report0\(REPORT_ID_LEDS,\s*&keyboard_led_state,\s*1\)') -or
+    ($tinyUsbSource -notmatch 'buffer\[0\]\s*=\s*keyboard_led_state')) {
+    throw 'The A-side keyboard interface must cache, normalize, forward, and return its LED state'
 }
 
 $dualBSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'remapper_dual_b.cc') -Raw
@@ -191,4 +202,6 @@ if ($dualBSource -notmatch 'tuh_hid_set_default_protocol\(HID_PROTOCOL_REPORT\);
     BootMouseWireBytes = 4
     BootMouseHasWheel = $true
     InputHostProtocol = 'Report'
+    KeyboardLedBits = 5
+    KeyboardLedStateCached = $true
 }
