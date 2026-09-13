@@ -1444,12 +1444,13 @@ bool send_report(send_report_t do_send_report) {
     if (our_descriptor == &our_descriptors[our_descriptor_number]) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
-
-    // XXX even if not sent?
-    or_head = (or_head + 1) % OR_BUFSIZE;
-    or_items--;
-
-    reports_sent++;
+    // Keep the report queued while the interrupt endpoint is busy. Relative
+    // mouse data would otherwise be discarded before TinyUSB transmits it.
+    if (sent) {
+        or_head = (or_head + 1) % OR_BUFSIZE;
+        or_items--;
+        reports_sent++;
+    }
 
     return sent;
 }

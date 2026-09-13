@@ -16,13 +16,18 @@ the pinned upstream commit.
   HID output remains interface 0 and the configuration/monitor channel remains
   interface 1.
 - Change the default keyboard input report from an NKRO bitmap to an
-  8-byte 6KRO array report (modifier, reserved, six key usages). The array
-  accepts usages through `0x91`, retaining the Japanese/international keys
-  exposed by the original descriptor.
+  8-byte 6KRO array report (modifier, reserved, six key usages). Its Usage and
+  Logical ranges both run from `0x04` through `0x91`, so each array byte is the
+  actual HID usage ID. This includes keypad usages `0x59` through `0x63` and
+  retains the Japanese/international keys exposed by the original descriptor;
+  zero-filled unused slots are explicitly declared as null state.
 - Change the default relative mouse input report to three buttons plus signed
   8-bit X, Y, and wheel fields.
 - Keep report IDs because keyboard, mouse, consumer control, and LED reports
   still share interface 0. An ID-less mouse cannot coexist with those report-ID
   reports on the same HID interface.
+- Retry an input report when TinyUSB reports the interrupt endpoint busy;
+  otherwise queued relative mouse movement can be discarded without having
+  reached USB.
 
 The absolute-mouse and gamepad descriptors are intentionally unchanged.

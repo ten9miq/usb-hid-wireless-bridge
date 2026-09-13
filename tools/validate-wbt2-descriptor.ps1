@@ -43,6 +43,12 @@ $reportCount = 0
 $inputBits = @{}
 $outputBits = @{}
 $featureBits = @{}
+$keyboardArray = $null
+$usagePage = 0
+$usageMinimum = 0
+$usageMaximum = 0
+$logicalMinimum = 0
+$logicalMaximum = 0
 
 for ($index = 0; $index -lt $bytes.Count;) {
     $prefix = $bytes[$index++]
@@ -64,10 +70,29 @@ for ($index = 0; $index -lt $bytes.Count;) {
     }
 
     switch ($prefix -band 0xFC) {
+        0x04 { $usagePage = $value }
+        0x14 { $logicalMinimum = $value }
+        0x24 { $logicalMaximum = $value }
+        0x18 { $usageMinimum = $value }
+        0x28 { $usageMaximum = $value }
         0x74 { $reportSize = $value }
         0x84 { $reportId = $value }
         0x94 { $reportCount = $value }
-        0x80 { $inputBits[$reportId] = [int]$inputBits[$reportId] + $reportSize * $reportCount }
+        0x80 {
+            $inputBits[$reportId] = [int]$inputBits[$reportId] + $reportSize * $reportCount
+            if (($reportId -eq 2) -and (($value -band 0x03) -eq 0) -and ($reportSize -eq 8) -and ($reportCount -eq 6)) {
+                $keyboardArray = [pscustomobject]@{
+                    InputFlags = $value
+                    UsagePage = $usagePage
+                    UsageMinimum = $usageMinimum
+                    UsageMaximum = $usageMaximum
+                    LogicalMinimum = $logicalMinimum
+                    LogicalMaximum = $logicalMaximum
+                }
+            }
+            $usageMinimum = 0
+            $usageMaximum = 0
+        }
         0x90 { $outputBits[$reportId] = [int]$outputBits[$reportId] + $reportSize * $reportCount }
         0xB0 { $featureBits[$reportId] = [int]$featureBits[$reportId] + $reportSize * $reportCount }
     }
@@ -88,6 +113,17 @@ if (($outputBits.Count -ne 1) -or ($outputBits[98] -ne 8)) {
 if ($featureBits.Count -ne 0) {
     throw "The simplified descriptor must not contain feature reports: $($featureBits.Keys -join ', ')"
 }
+if ($null -eq $keyboardArray) {
+    throw 'The six-key keyboard array was not found on Report ID 2'
+}
+if (($keyboardArray.InputFlags -ne 0x40) -or
+    ($keyboardArray.UsagePage -ne 0x07) -or
+    ($keyboardArray.UsageMinimum -ne 0x04) -or
+    ($keyboardArray.UsageMaximum -lt 0x63) -or
+    ($keyboardArray.LogicalMinimum -ne $keyboardArray.UsageMinimum) -or
+    ($keyboardArray.LogicalMaximum -ne $keyboardArray.UsageMaximum)) {
+    throw "Keyboard array range is not a direct usage mapping: $($keyboardArray | ConvertTo-Json -Compress)"
+}
 
 [pscustomobject]@{
     DescriptorBytes = $bytes.Count
@@ -95,4 +131,7 @@ if ($featureBits.Count -ne 0) {
     SimpleMouseBytes = $inputBits[1] / 8
     ConsumerBytes = $inputBits[3] / 8
     LedOutputBytes = $outputBits[98] / 8
+    KeyboardUsageMinimum = ('0x{0:X2}' -f $keyboardArray.UsageMinimum)
+    KeyboardUsageMaximum = ('0x{0:X2}' -f $keyboardArray.UsageMaximum)
+    MouseWireBytes = 1 + $inputBits[1] / 8
 }

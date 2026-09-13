@@ -2,7 +2,7 @@ diff --git a/firmware/src/our_descriptor.cc b/firmware/src/our_descriptor.cc
 index 0902867..4bd49ac 100644
 --- a/firmware/src/our_descriptor.cc
 +++ b/firmware/src/our_descriptor.cc
-@@ -22,22 +22,19 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
+@@ -22,22 +22,20 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
      0x75, 0x01,                //   Report Size (1)
      0x95, 0x08,                //   Report Count (8)
      0x81, 0x02,                //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
@@ -21,20 +21,21 @@ index 0902867..4bd49ac 100644
      0x95, 0x01,                //   Report Count (1)
 +    0x75, 0x08,                //   Report Size (8)
      0x81, 0x03,                //   Input (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
-+    0x95, 0x06,                //   Report Count (6)
++    0x05, 0x07,                //   Usage Page (Kbrd/Keypad)
++    0x19, 0x04,                //   Usage Minimum (Keyboard a and A)
++    0x29, 0x91,                //   Usage Maximum (LANG2)
++    0x15, 0x04,                //   Logical Minimum (4)
++    0x26, 0x91, 0x00,          //   Logical Maximum (145)
 +    0x75, 0x08,                //   Report Size (8)
-+    0x15, 0x00,                //   Logical Minimum (0)
-+    0x26, 0xFF, 0x00,          //   Logical Maximum (255)
-+    0x19, 0x00,                //   Usage Minimum (0x00)
-+    0x2A, 0x91, 0x00,          //   Usage Maximum (0x91)
-+    0x81, 0x00,                //   Input (Data,Array,Abs,No Wrap,Linear,Preferred State,No Null Position)
++    0x95, 0x06,                //   Report Count (6)
++    0x81, 0x40,                //   Input (Data,Array,Abs,No Wrap,Linear,Preferred State,Null State)
      0x85, REPORT_ID_LEDS,      //   Report ID (REPORT_ID_LEDS)
      0x05, 0x08,                //   Usage Page (LEDs)
 +    0x75, 0x01,                //   Report Size (1)
      0x95, 0x05,                //   Report Count (5)
      0x19, 0x01,                //   Usage Minimum (Num Lock)
      0x29, 0x05,                //   Usage Maximum (Kana)
-@@ -47,73 +44,34 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
+@@ -47,73 +45,34 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
      0x91, 0x03,                //   Output (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position,Non-volatile)
      0xC0,                      // End Collection
  
@@ -136,3 +137,39 @@ index 0902867..4bd49ac 100644
  
      0x05, 0x0C,                // Usage Page (Consumer)
      0x09, 0x01,                // Usage (Consumer Control)
+diff --git a/firmware/src/main.cc b/firmware/src/main.cc
+--- a/firmware/src/main.cc
++++ b/firmware/src/main.cc
+@@ -77,7 +77,7 @@ bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t l
+         our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
+         tud_remote_wakeup();
++        return false;
+     } else {
+-        tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
++        return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
+     }
+-    return true;  // XXX?
+ }
+diff --git a/firmware/src/remapper.cc b/firmware/src/remapper.cc
+--- a/firmware/src/remapper.cc
++++ b/firmware/src/remapper.cc
+@@ -1444,11 +1444,13 @@ bool send_report(send_report_t do_send_report) {
+     if (our_descriptor == &our_descriptors[our_descriptor_number]) {
+         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
+     }
+-
+-    // XXX even if not sent?
+-    or_head = (or_head + 1) % OR_BUFSIZE;
+-    or_items--;
+-
+-    reports_sent++;
++    // Keep the report queued while the interrupt endpoint is busy. Relative
++    // mouse data would otherwise be discarded before TinyUSB transmits it.
++    if (sent) {
++        or_head = (or_head + 1) % OR_BUFSIZE;
++        or_items--;
++        reports_sent++;
++    }
++
+     return sent;
+ }
