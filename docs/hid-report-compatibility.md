@@ -19,4 +19,19 @@
 
 ## 次段階
 
-A/B で解消しない場合は、Keyboard と Mouse を別 HID interface に分け、各 interface を Boot subclass/protocol として提示する必要があります。descriptor だけでなく configuration descriptor、descriptor callback、送信先 interface、LED 出力処理も同時に見直します。
+A/B の実機確認では一般キーの大半だけが動作し、テンキーとマウスは動作しませんでした。一方、キーボード、テンキー、マウスを WBT2-V4 へ直接接続するとすべて動作したため、WBT2 の入力対応ではなく HID Remapper の複合 report 形式が非互換要因です。
+
+`remapper_dual_a` は次の4 interface構成でビルドします。
+
+| interface | subclass/protocol | USB上のreport | endpoint |
+|---:|---|---|---:|
+| 0 | Boot Keyboard | Report IDなし、modifier + reserved + 6 keys（8 byte） | `0x81` |
+| 1 | Boot Mouse | Report IDなし、3 buttons + X/Y（3 byte） | `0x82` |
+| 2 | None | Report IDなし、Consumer Control（1 byte） | `0x83` |
+| 3 | None | 既存のConfig/Monitor report | `0x84` |
+
+内部のマッピング処理と送信キューでは従来の Report ID `1`（Mouse）、`2`（Keyboard）、`3`（Consumer）を維持し、USB送信直前にinterfaceへ振り分けてReport IDを除去します。これにより保存済み設定のusage、`our_descriptor_number: 0`、Flash上の設定形式は変更しません。Keyboard LED出力はinterface 0のIDなしOutput reportを内部の`REPORT_ID_LEDS`へ変換します。
+
+Boot Mouse互換性を優先し、この段階のMouse reportにはwheelを含めません。マウス移動・ボタンの実機確認後、WBT2がReport Protocolの4 byte mouse（wheel付き）も受け入れる場合に限って拡張します。
+
+この分離はPC接続側の`remapper_dual_a`だけに`WBT2_BOOT_INTERFACES`として有効化します。入力デバイス側`remapper_dual_b`、保存済み購入時UF2、設定JSONには変更を加えません。

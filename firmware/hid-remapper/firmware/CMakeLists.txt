@@ -108,6 +108,7 @@ add_executable(remapper_dual_a
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:src/i2c.cc>
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:src/mcp4651.cc>
 )
+target_compile_definitions(remapper_dual_a PRIVATE WBT2_BOOT_INTERFACES=1)
 target_include_directories(remapper_dual_a PRIVATE
     src
     src/tusb_config_device

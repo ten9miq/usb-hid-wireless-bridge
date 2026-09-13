@@ -715,3 +715,63 @@ uint8_t const boot_kb_report_descriptor[] = {
 };
 
 const uint32_t boot_kb_report_descriptor_length = sizeof(boot_kb_report_descriptor);
+
+// Standard three-byte Boot Mouse report: buttons, X, Y.  Wheel is omitted
+// deliberately because it is not part of the USB HID Boot Mouse protocol.
+const uint8_t boot_mouse_report_descriptor[] = {
+    0x05, 0x01,  // Usage Page (Generic Desktop)
+    0x09, 0x02,  // Usage (Mouse)
+    0xA1, 0x01,  // Collection (Application)
+    0x09, 0x01,  //   Usage (Pointer)
+    0xA1, 0x00,  //   Collection (Physical)
+    0x05, 0x09,  //     Usage Page (Button)
+    0x19, 0x01,  //     Usage Minimum (Button 1)
+    0x29, 0x03,  //     Usage Maximum (Button 3)
+    0x15, 0x00,  //     Logical Minimum (0)
+    0x25, 0x01,  //     Logical Maximum (1)
+    0x95, 0x03,  //     Report Count (3)
+    0x75, 0x01,  //     Report Size (1)
+    0x81, 0x02,  //     Input (Data,Var,Abs)
+    0x95, 0x01,  //     Report Count (1)
+    0x75, 0x05,  //     Report Size (5)
+    0x81, 0x03,  //     Input (Const,Var,Abs)
+    0x05, 0x01,  //     Usage Page (Generic Desktop)
+    0x09, 0x30,  //     Usage (X)
+    0x09, 0x31,  //     Usage (Y)
+    0x15, 0x81,  //     Logical Minimum (-127)
+    0x25, 0x7F,  //     Logical Maximum (127)
+    0x75, 0x08,  //     Report Size (8)
+    0x95, 0x02,  //     Report Count (2)
+    0x81, 0x06,  //     Input (Data,Var,Rel)
+    0xC0,        //   End Collection
+    0xC0,        // End Collection
+};
+
+const uint32_t boot_mouse_report_descriptor_length = sizeof(boot_mouse_report_descriptor);
+
+// Consumer control stays available on its own ID-less report interface.  It
+// is intentionally not mixed into either Boot interface.
+const uint8_t consumer_report_descriptor[] = {
+    0x05, 0x0C,  // Usage Page (Consumer)
+    0x09, 0x01,  // Usage (Consumer Control)
+    0xA1, 0x01,  // Collection (Application)
+    0x15, 0x00,  //   Logical Minimum (0)
+    0x25, 0x01,  //   Logical Maximum (1)
+    0x09, 0xB5,  //   Usage (Scan Next Track)
+    0x09, 0xB6,  //   Usage (Scan Previous Track)
+    0x09, 0xB7,  //   Usage (Stop)
+    0x09, 0xCD,  //   Usage (Play/Pause)
+    0x09, 0xE2,  //   Usage (Mute)
+    0x09, 0xE9,  //   Usage (Volume Increment)
+    0x09, 0xEA,  //   Usage (Volume Decrement)
+    0x75, 0x01,  //   Report Size (1)
+    0x95, 0x07,  //   Report Count (7)
+    0x81, 0x02,  //   Input (Data,Var,Abs)
+    0x05, 0x0B,  //   Usage Page (Telephony)
+    0x09, 0x2F,  //   Usage (Phone Mute)
+    0x95, 0x01,  //   Report Count (1)
+    0x81, 0x02,  //   Input (Data,Var,Abs)
+    0xC0,        // End Collection
+};
+
+const uint32_t consumer_report_descriptor_length = sizeof(consumer_report_descriptor);

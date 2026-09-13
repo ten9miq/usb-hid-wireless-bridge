@@ -1442,7 +1442,19 @@ bool send_report(send_report_t do_send_report) {
 
     bool sent = false;
     if (our_descriptor == &our_descriptors[our_descriptor_number]) {
-        sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
+        uint8_t interface = 0;
+#ifdef WBT2_BOOT_INTERFACES
+        if (our_descriptor->idx == 0) {
+            // Internal report IDs remain stable so saved mappings and the
+            // descriptor parser do not change; only their USB destinations do.
+            if (report_id == 1) {
+                interface = 1;  // Mouse
+            } else if (report_id == 3) {
+                interface = 2;  // Consumer control
+            }
+        }
+#endif
+        sent = do_send_report(interface, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
     // Keep the report queued while the interrupt endpoint is busy. Relative
     // mouse data would otherwise be discarded before TinyUSB transmits it.
@@ -1460,7 +1472,13 @@ bool send_monitor_report(send_report_t do_send_report) {
         return false;
     }
 
-    bool sent = do_send_report(1, (uint8_t*) &monitor_report[monitor_report_idx], sizeof(monitor_report_t));
+    uint8_t interface = 1;
+#ifdef WBT2_BOOT_INTERFACES
+    if (our_descriptor->idx == 0) {
+        interface = 3;
+    }
+#endif
+    bool sent = do_send_report(interface, (uint8_t*) &monitor_report[monitor_report_idx], sizeof(monitor_report_t));
 
     monitor_report_idx = (monitor_report_idx + 1) % 2;
     memset(&(monitor_report[monitor_report_idx].items), 0, sizeof(monitor_report[0].items));

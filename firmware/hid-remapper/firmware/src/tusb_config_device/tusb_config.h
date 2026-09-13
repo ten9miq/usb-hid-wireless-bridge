@@ -8,7 +8,11 @@
 
 #define CFG_TUD_ENDPOINT0_SIZE 64
 
+#ifdef WBT2_BOOT_INTERFACES
+#define CFG_TUD_HID 4
+#else
 #define CFG_TUD_HID 2
+#endif
 #define CFG_TUD_CDC 0
 #define CFG_TUD_MSC 0
 #define CFG_TUD_MIDI 0

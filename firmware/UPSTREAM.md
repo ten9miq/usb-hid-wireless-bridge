@@ -6,9 +6,10 @@
 - Imported path: `firmware/hid-remapper`
 
 `firmware/hid-remapper` is a vendored source snapshot. It is not a nested Git
-repository or submodule. The local WBT2-V4 A/B changes are also recorded in
-`patches/wbt2-v4-simple-reports.patch` so they can be applied to a clean copy of
-the pinned upstream commit.
+repository or submodule. The first simple-report WBT2-V4 A/B change is also
+recorded in `patches/wbt2-v4-simple-reports.patch` so that stage can be applied
+to a clean copy of the pinned upstream commit. The later Boot-interface stage
+is maintained in the vendored source and described below.
 
 ## A/B scope
 
@@ -31,3 +32,16 @@ the pinned upstream commit.
   reached USB.
 
 The absolute-mouse and gamepad descriptors are intentionally unchanged.
+
+## Boot-interface stage
+
+After the simple-report A/B still failed for the keypad and mouse, the
+`remapper_dual_a` target was changed to expose descriptor 0 as four HID
+interfaces: ID-less Boot Keyboard, ID-less Boot Mouse, ID-less Consumer
+Control, and the existing configuration/monitor channel.  Internal report IDs
+remain unchanged and are translated to interfaces only at the USB send path,
+so persisted mappings and the configuration format remain compatible.
+
+The strict Boot Mouse report is three bytes and therefore does not include a
+wheel in this compatibility stage.  Other output descriptor selections keep
+their original two-interface configuration.

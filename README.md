@@ -14,13 +14,13 @@ HID Remapper V5.1 (RP2040)
 WBT2-V4  ->  2.4 GHz receiver  ->  PC
 ```
 
-現在確認したい互換性問題は、HID Remapper 経由でキーボード Usage が 4 小さく見えることと、マウス入力が受信側で動作しないことです。詳細な仮説と検証順序は [`docs/context.md`](docs/context.md) を参照してください。
+複合HIDの単純化後もテンキーとマウスがWBT2-V4経由では動作しなかったため、現在はPC接続側をReport IDなしのBoot Keyboard／Boot Mouse別interfaceにする段階です。実測と構成の詳細は [`docs/hid-report-compatibility.md`](docs/hid-report-compatibility.md) を参照してください。
 
 ## 方針
 
 1. 実機を書き換える前に、現行 RP2040 Flash と設定を保存する。
 2. まず既存の USB interface 構成を維持した最小 descriptor A/B を試す。
-3. 受信機が Boot protocol 前提の場合だけ、Keyboard/Mouse の別 interface 化へ進む。
+3. Keyboard/Mouse別Boot interface版をビルドし、書き込み前にdescriptorを静的検証する。
 
 このリポジトリには、実機で取得していない firmware やバックアップを推測して含めません。
 

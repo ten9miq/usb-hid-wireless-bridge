@@ -78,6 +78,17 @@ bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t le
         tud_remote_wakeup();
         return false;
     } else {
+#ifdef WBT2_BOOT_INTERFACES
+        if ((our_descriptor->idx == 0) && (interface <= 2)) {
+            // Report IDs are an internal queue discriminator only.  Each USB
+            // interface has exactly one ID-less input report.
+            uint8_t wire_len = len - 1;
+            if (interface == 1) {
+                wire_len = 3;  // Strict Boot Mouse: buttons, X, Y.
+            }
+            return tud_hid_n_report(interface, 0, report_with_id + 1, wire_len);
+        }
+#endif
         return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
     }
 }
@@ -303,10 +314,22 @@ int main() {
             set_gpio_dir();
             set_gpio_dir_pending = false;
         }
-        if (tud_hid_n_ready(0) || tud_suspended()) {
+        bool output_ready = tud_hid_n_ready(0);
+#ifdef WBT2_BOOT_INTERFACES
+        if (our_descriptor->idx == 0) {
+            output_ready = output_ready || tud_hid_n_ready(1) || tud_hid_n_ready(2);
+        }
+#endif
+        if (output_ready || tud_suspended()) {
             send_report(do_send_report);
         }
-        if (monitor_enabled && tud_hid_n_ready(1)) {
+        uint8_t monitor_interface = 1;
+#ifdef WBT2_BOOT_INTERFACES
+        if (our_descriptor->idx == 0) {
+            monitor_interface = 3;
+        }
+#endif
+        if (monitor_enabled && tud_hid_n_ready(monitor_interface)) {
             send_monitor_report(do_send_report);
         }
         if (our_descriptor->main_loop_task != nullptr) {
