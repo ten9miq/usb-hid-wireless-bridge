@@ -1,2 +1,8 @@
 # Device-specific Flash dumps must remain local and must not be committed.
 /backups-*/
+
+# Firmware build dependencies are fetched locally from the upstream submodules.
+/firmware/hid-remapper/firmware/pico-sdk/
+/firmware/hid-remapper/firmware/tinyusb/
+/firmware/hid-remapper/firmware/Pico-PIO-USB/
+/firmware/hid-remapper/firmware/usb_midi_host/
