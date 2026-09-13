@@ -1,0 +1,2 @@
+# Device-specific Flash dumps must remain local and must not be committed.
+/backups-*/
