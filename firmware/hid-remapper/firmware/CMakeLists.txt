@@ -150,7 +150,7 @@ pico_add_extra_outputs(remapper_dual_b)
 add_custom_command(
   OUTPUT dual_b_binary.c dual_b_binary.h
   DEPENDS remapper_dual_b
-  COMMAND srec_cat remapper_dual_b.hex -Intel -Output dual_b_binary.c -C-Array dual_b_binary -INClude
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/../../../tools/hex_to_c_array.py remapper_dual_b.hex dual_b_binary.c dual_b_binary
   VERBATIM
 )
 

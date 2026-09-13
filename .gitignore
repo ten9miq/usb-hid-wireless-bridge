@@ -6,3 +6,4 @@
 /firmware/hid-remapper/firmware/tinyusb/
 /firmware/hid-remapper/firmware/Pico-PIO-USB/
 /firmware/hid-remapper/firmware/usb_midi_host/
+/firmware/hid-remapper/firmware/build*/
