@@ -8,9 +8,12 @@
 
 - 既存の interface 数と送信経路は変更しない。
 - キーボードを 6KRO の modifier + 6 byte key array にする。
-- マウスを Report ID なしの相対 X/Y/Wheel とボタンへ単純化する。
+- マウスを 3 ボタン + 8-bit 相対 X/Y/Wheel へ単純化する。
+- Keyboard/Mouse/Consumer/LED が同じ HID interface を共有するため、この段階では Report ID を維持する。
 
 この A/B は「真の USB Boot protocol 実装」ではありません。受信機が descriptor の単純化だけで動くかを切り分けるための段階です。
+
+同一 HID interface で一部の report だけを Report ID なしにすることはできません。マウスの Report ID 自体が非互換要因だった場合は、次段階の別 interface 化が必要です。
 
 ## 次段階
 

@@ -22,7 +22,7 @@
 
 1. 現行 firmware の `picotool info -a`、Flash 全域の UF2/BIN、Web 設定 JSON を保存する。
 2. 上流 HID Remapper を commit SHA 固定で `firmware/hid-remapper` に取り込む。
-3. 既存 interface 構成を維持した A/B descriptor（6KRO array + Simple Mouse）を作る。
+3. 既存 interface 構成を維持した A/B descriptor（Report ID ありの 6KRO array + Simple Mouse）を作る。
 4. 直結 PC でキー、修飾キー、6 キー超過、ボタン、軸、wheel、LED を確認する。
 5. WBT2-V4 経由で Usage ずれとマウス不動が解消するか確認する。
 6. 解消しない場合のみ、Report ID なしの Keyboard/Mouse 別 interface と Boot subclass/protocol を検討する。

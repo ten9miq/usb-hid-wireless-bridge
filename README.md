@@ -24,6 +24,8 @@ WBT2-V4  ->  2.4 GHz receiver  ->  PC
 
 このリポジトリには、実機で取得していない firmware やバックアップを推測して含めません。
 
+上流ソースの固定先とA/B変更範囲は [`firmware/UPSTREAM.md`](firmware/UPSTREAM.md) を参照してください。
+
 ## ディレクトリ
 
 ```text
