@@ -62,6 +62,11 @@ int main() {
         serial_read(serial_callback);
     }
 
+    // TinyUSB otherwise switches every Boot-capable keyboard/mouse interface
+    // to Boot protocol during enumeration.  Prefer the device's full report
+    // descriptor so composite and extended keyboard collections are preserved.
+    // This is intentionally generic rather than tied to a VID/PID quirk.
+    tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT);
     tusb_init();
 
     while (true) {

@@ -37,3 +37,11 @@ A/B の実機確認では一般キーの大半だけが動作し、テンキー�
 KeyboardはWBT2-V4が解釈しやすい標準Boot Keyboardのarray範囲に合わせ、Usage Minimum/MaximumとLogical Minimum/Maximumを`0x00`–`0x65`にします。テンキーusage `0x59`–`0x63`はこの範囲内であり、内部6KRO reportの各slotにusage IDそのものを格納してUSB上の8 byte reportへそのまま渡します。`c`/`v`の無反応は保存設定内のPageUp/PageDown mappingを削除すると解消したため、descriptor問題とは分離します。
 
 この分離はPC接続側の`remapper_dual_a`だけに`WBT2_BOOT_INTERFACES`として有効化します。入力デバイス側`remapper_dual_b`、保存済み購入時UF2、設定JSONには変更を加えません。
+
+## 入力側のReport protocol
+
+TinyUSB hostは既定ではBoot subclassのKeyboard/Mouseを列挙時にBoot protocolへ切り替えます。これは単純な3 byte mouseや8 byte keyboardには適しますが、Report protocol側に複数のtop-level collection、Report ID、追加キーを持つデバイスでは、PCへ直結した場合とHID Remapper B側へ接続した場合のreport形式が変わります。
+
+B側は列挙前に`tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT)`を指定し、VID/PIDに依存せず各HID interfaceのreport descriptorどおりに受信します。既存コードは最大16 HID instanceを確保し、descriptor取得時とreport受信時の両方で同じTinyUSB `instance`をA側へ渡すため、複数interfaceは`dev_addr + instance`ごとに分離されます。同一interface内の複数collectionはReport IDごとのusage mapとして解析されます。
+
+この変更でデバイス固有quirkは追加しません。実機確認では、HID RemapperのMonitorにKeyboard/Keypad usage `0x00070059`–`0x00070063`とnavigation usageが出ることを先に確認し、その後WBT2-V4経由のRaw Inputと照合します。Monitorにも出ない場合は、B側が受信したreport descriptorとreport byte列の採取が次の切り分けになります。

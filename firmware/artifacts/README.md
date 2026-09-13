@@ -2,6 +2,9 @@
 
 `remapper_dual_a-wbt2-simple-reports.uf2` はPC接続側（A側）用、
 `remapper_dual_b-wbt2-simple-reports.uf2` は入力デバイス側（B側）用です。
+現行B側はTinyUSBの既定Boot protocol強制を無効にし、接続デバイスの
+Report protocol descriptorをそのまま使用します。複数interface／collectionを
+VID/PID固有quirkなしで扱うための変更です。
 
 `remapper_dual_a-wbt2-boot-interfaces.uf2` は、単純化版で解消しなかった
 WBT2-V4互換性を切り分けるため、A側をReport IDなしのBoot Keyboard／

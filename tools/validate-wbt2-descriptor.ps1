@@ -172,6 +172,11 @@ if ($mainSource -notmatch 'tud_hid_n_report\(interface,\s*0,\s*report_with_id\s*
     throw 'The split interfaces must send their complete payload without a Report ID'
 }
 
+$dualBSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'remapper_dual_b.cc') -Raw
+if ($dualBSource -notmatch 'tuh_hid_set_default_protocol\(HID_PROTOCOL_REPORT\);\s*tusb_init\(\);') {
+    throw 'The B-side host must select HID Report protocol before TinyUSB initialization'
+}
+
 [pscustomobject]@{
     DescriptorBytes = $bytes.Count
     Keyboard6KROBytes = $inputBits[2] / 8
@@ -185,4 +190,5 @@ if ($mainSource -notmatch 'tud_hid_n_report\(interface,\s*0,\s*report_with_id\s*
     BootKeyboardUsageMaximum = '0x65'
     BootMouseWireBytes = 4
     BootMouseHasWheel = $true
+    InputHostProtocol = 'Report'
 }

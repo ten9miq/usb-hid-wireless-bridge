@@ -48,3 +48,11 @@ Boot Keyboard descriptor uses the conventional `0x00` through `0x65` usage
 and logical ranges; keypad usages `0x59` through `0x63` remain valid array
 values.  Other output descriptor selections keep their original two-interface
 configuration.
+
+## Input-host protocol
+
+TinyUSB host defaults Boot-subclass HID interfaces to Boot protocol during
+enumeration.  The `remapper_dual_b` target now selects `HID_PROTOCOL_REPORT`
+before USB host initialization so every device is consumed according to its
+full report descriptor.  This keeps multi-interface and multi-collection
+devices generic and avoids a receiver- or keyboard-specific VID/PID quirk.
