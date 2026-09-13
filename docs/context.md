@@ -10,6 +10,11 @@
 - HID Remapper 経由ではマウスが動作しない。
 - キーボード Usage が観測上 4 ずれる（期待値より -4）。
 
+## 追加で確認できたこと
+
+- `c` / `v` が無反応になる現象は、HID Remapper の mappings を全削除すると解消した。
+- 物理的にUSB3へ接続していても、USB4向けに保存した mapping が影響した可能性がある。設定の `source_port` と実際の入力経路番号が一致するとは限らないため、ポート依存mappingを追加する前にMonitorで経路を確認する。
+
 ## 現時点の仮説（未確定）
 
 1. HID Remapper の通常キーボード出力は Usage Minimum `0x04` の NKRO bitmap である。
