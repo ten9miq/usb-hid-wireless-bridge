@@ -146,7 +146,6 @@ target_link_libraries(remapper_dual_b
     usb_midi_host
 )
 pico_add_extra_outputs(remapper_dual_b)
-pico_add_hex_output(remapper_dual_b)
 
 add_custom_command(
   OUTPUT dual_b_binary.c dual_b_binary.h
