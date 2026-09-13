@@ -26,12 +26,14 @@ A/B の実機確認では一般キーの大半だけが動作し、テンキー�
 | interface | subclass/protocol | USB上のreport | endpoint |
 |---:|---|---|---:|
 | 0 | Boot Keyboard | Report IDなし、modifier + reserved + 6 keys（8 byte） | `0x81` |
-| 1 | Boot Mouse | Report IDなし、3 buttons + X/Y（3 byte） | `0x82` |
+| 1 | Boot Mouse subclass | Report IDなし、3 buttons + X/Y/Wheel（4 byte） | `0x82` |
 | 2 | None | Report IDなし、Consumer Control（1 byte） | `0x83` |
 | 3 | None | 既存のConfig/Monitor report | `0x84` |
 
 内部のマッピング処理と送信キューでは従来の Report ID `1`（Mouse）、`2`（Keyboard）、`3`（Consumer）を維持し、USB送信直前にinterfaceへ振り分けてReport IDを除去します。これにより保存済み設定のusage、`our_descriptor_number: 0`、Flash上の設定形式は変更しません。Keyboard LED出力はinterface 0のIDなしOutput reportを内部の`REPORT_ID_LEDS`へ変換します。
 
-Boot Mouse互換性を優先し、この段階のMouse reportにはwheelを含めません。マウス移動・ボタンの実機確認後、WBT2がReport Protocolの4 byte mouse（wheel付き）も受け入れる場合に限って拡張します。
+3 byte Boot Mouse版でマウス移動と左右クリックがWBT2-V4経由でも動作したため、同じReport IDなしinterfaceの末尾にwheelを加えた4 byte reportへ拡張します。
+
+KeyboardはWBT2-V4が解釈しやすい標準Boot Keyboardのarray範囲に合わせ、Usage Minimum/MaximumとLogical Minimum/Maximumを`0x00`–`0x65`にします。テンキーusage `0x59`–`0x63`はこの範囲内であり、内部6KRO reportの各slotにusage IDそのものを格納してUSB上の8 byte reportへそのまま渡します。`c`/`v`の無反応は保存設定内のPageUp/PageDown mappingを削除すると解消したため、descriptor問題とは分離します。
 
 この分離はPC接続側の`remapper_dual_a`だけに`WBT2_BOOT_INTERFACES`として有効化します。入力デバイス側`remapper_dual_b`、保存済み購入時UF2、設定JSONには変更を加えません。

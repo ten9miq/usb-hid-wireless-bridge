@@ -125,6 +125,53 @@ if (($keyboardArray.InputFlags -ne 0x40) -or
     throw "Keyboard array range is not a direct usage mapping: $($keyboardArray | ConvertTo-Json -Compress)"
 }
 
+function Get-IdlessDescriptorBytes([string]$Name) {
+    $descriptorMatch = [regex]::Match(
+        $source,
+        "(?:const\s+uint8_t|uint8_t\s+const)\s+$Name\[\]\s*=\s*\{(?<body>.*?)\n\};",
+        [Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    if (-not $descriptorMatch.Success) {
+        throw "$Name was not found"
+    }
+
+    $descriptorBody = ($descriptorMatch.Groups['body'].Value -split "`r?`n" | ForEach-Object {
+        $_ -replace '//.*$', ''
+    }) -join "`n"
+    if ($descriptorBody -match 'REPORT_ID_|0x85\s*,') {
+        throw "$Name must not contain a Report ID item"
+    }
+
+    $descriptorBytes = [Collections.Generic.List[byte]]::new()
+    foreach ($hexMatch in [regex]::Matches($descriptorBody, '0x[0-9A-Fa-f]+')) {
+        $descriptorBytes.Add([Convert]::ToByte($hexMatch.Value.Substring(2), 16))
+    }
+    return $descriptorBytes.ToArray()
+}
+
+function ConvertTo-HexSequence([byte[]]$DescriptorBytes) {
+    return (($DescriptorBytes | ForEach-Object { '{0:X2}' -f $_ }) -join ' ')
+}
+
+$bootKeyboardBytes = Get-IdlessDescriptorBytes 'boot_kb_report_descriptor'
+$bootKeyboardHex = ConvertTo-HexSequence $bootKeyboardBytes
+$expectedKeyboardArray = '05 07 19 00 29 65 15 00 25 65 75 08 95 06 81 00'
+if (-not $bootKeyboardHex.Contains($expectedKeyboardArray)) {
+    throw 'Boot Keyboard array must use matching Usage/Logical ranges 0x00-0x65 and six 8-bit slots'
+}
+
+$bootMouseBytes = Get-IdlessDescriptorBytes 'boot_mouse_report_descriptor'
+$bootMouseHex = ConvertTo-HexSequence $bootMouseBytes
+$expectedMouseAxes = '09 30 09 31 09 38 15 81 25 7F 75 08 95 03 81 06'
+if (-not $bootMouseHex.Contains($expectedMouseAxes)) {
+    throw 'Boot Mouse interface must expose signed 8-bit X, Y, and Wheel fields'
+}
+
+$mainSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'main.cc') -Raw
+if ($mainSource -notmatch 'tud_hid_n_report\(interface,\s*0,\s*report_with_id\s*\+\s*1,\s*len\s*-\s*1\)') {
+    throw 'The split interfaces must send their complete payload without a Report ID'
+}
+
 [pscustomobject]@{
     DescriptorBytes = $bytes.Count
     Keyboard6KROBytes = $inputBits[2] / 8
@@ -133,5 +180,9 @@ if (($keyboardArray.InputFlags -ne 0x40) -or
     LedOutputBytes = $outputBits[98] / 8
     KeyboardUsageMinimum = ('0x{0:X2}' -f $keyboardArray.UsageMinimum)
     KeyboardUsageMaximum = ('0x{0:X2}' -f $keyboardArray.UsageMaximum)
-    MouseWireBytes = 1 + $inputBits[1] / 8
+    CompositeMouseWireBytes = 1 + $inputBits[1] / 8
+    BootKeyboardWireBytes = 8
+    BootKeyboardUsageMaximum = '0x65'
+    BootMouseWireBytes = 4
+    BootMouseHasWheel = $true
 }

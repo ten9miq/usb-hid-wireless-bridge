@@ -82,11 +82,7 @@ bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t le
         if ((our_descriptor->idx == 0) && (interface <= 2)) {
             // Report IDs are an internal queue discriminator only.  Each USB
             // interface has exactly one ID-less input report.
-            uint8_t wire_len = len - 1;
-            if (interface == 1) {
-                wire_len = 3;  // Strict Boot Mouse: buttons, X, Y.
-            }
-            return tud_hid_n_report(interface, 0, report_with_id + 1, wire_len);
+            return tud_hid_n_report(interface, 0, report_with_id + 1, len - 1);
         }
 #endif
         return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);

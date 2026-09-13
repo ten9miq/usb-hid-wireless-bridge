@@ -8,6 +8,8 @@ WBT2-V4互換性を切り分けるため、A側をReport IDなしのBoot Keyboar
 Boot Mouse別interfaceにした次段階の検証用です。B側は既存の
 `remapper_dual_b-wbt2-simple-reports.uf2`をそのまま使用します。
 
-Boot Mouse互換性を優先したため、このA/Bではwheel出力を省略しています。
+現行版は、動作確認済みの3 byte mouse reportへwheelを末尾追加した4 byte版です。
+Keyboard descriptorは標準Boot範囲`0x00`–`0x65`を宣言し、範囲内のテンキー
+usage `0x59`–`0x63`を6KRO arrayで送信します。
 
 書き込み前に、保存済みの購入時バックアップから復元できることを確認してください。

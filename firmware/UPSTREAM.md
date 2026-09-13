@@ -42,6 +42,9 @@ Control, and the existing configuration/monitor channel.  Internal report IDs
 remain unchanged and are translated to interfaces only at the USB send path,
 so persisted mappings and the configuration format remain compatible.
 
-The strict Boot Mouse report is three bytes and therefore does not include a
-wheel in this compatibility stage.  Other output descriptor selections keep
-their original two-interface configuration.
+After the three-byte Boot Mouse version passed movement and button testing, its
+ID-less report was extended to four bytes by appending the wheel field.  The
+Boot Keyboard descriptor uses the conventional `0x00` through `0x65` usage
+and logical ranges; keypad usages `0x59` through `0x63` remain valid array
+values.  Other output descriptor selections keep their original two-interface
+configuration.

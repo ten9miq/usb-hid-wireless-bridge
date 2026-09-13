@@ -696,9 +696,10 @@ uint8_t const boot_kb_report_descriptor[] = {
     0x81, 0x03,        //   Input (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x05, 0x07,        //   Usage Page (Kbrd/Keypad)
     0x19, 0x00,        //   Usage Minimum (0x00)
-    0x2A, 0x91, 0x00,  //   Usage Maximum (0x91)
+    0x29, 0x65,        //   Usage Maximum (Keyboard Application)
     0x15, 0x00,        //   Logical Minimum (0)
-    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x25, 0x65,        //   Logical Maximum (101)
+    0x75, 0x08,        //   Report Size (8)
     0x95, 0x06,        //   Report Count (6)
     0x81, 0x00,        //   Input (Data,Array,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x05, 0x08,        //   Usage Page (LEDs)
@@ -716,8 +717,8 @@ uint8_t const boot_kb_report_descriptor[] = {
 
 const uint32_t boot_kb_report_descriptor_length = sizeof(boot_kb_report_descriptor);
 
-// Standard three-byte Boot Mouse report: buttons, X, Y.  Wheel is omitted
-// deliberately because it is not part of the USB HID Boot Mouse protocol.
+// Boot-compatible mouse report extended with a fourth wheel byte.  WBT2-V4
+// accepts the three-byte prefix; the report descriptor declares the extension.
 const uint8_t boot_mouse_report_descriptor[] = {
     0x05, 0x01,  // Usage Page (Generic Desktop)
     0x09, 0x02,  // Usage (Mouse)
@@ -738,10 +739,11 @@ const uint8_t boot_mouse_report_descriptor[] = {
     0x05, 0x01,  //     Usage Page (Generic Desktop)
     0x09, 0x30,  //     Usage (X)
     0x09, 0x31,  //     Usage (Y)
+    0x09, 0x38,  //     Usage (Wheel)
     0x15, 0x81,  //     Logical Minimum (-127)
     0x25, 0x7F,  //     Logical Maximum (127)
     0x75, 0x08,  //     Report Size (8)
-    0x95, 0x02,  //     Report Count (2)
+    0x95, 0x03,  //     Report Count (3)
     0x81, 0x06,  //     Input (Data,Var,Rel)
     0xC0,        //   End Collection
     0xC0,        // End Collection
