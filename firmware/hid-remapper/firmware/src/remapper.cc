@@ -214,7 +214,6 @@ uint64_t frame_counter = 0;
 #define HUB_PORT_NONE 255
 #define NPORTS 15
 std::unordered_map<uint8_t, uint8_t> hub_ports;  // dev_addr -> hub_port
-std::unordered_map<uint32_t, uint16_t> passthrough_specific_source_ports;  // usage -> source hub port bitmask
 uint16_t active_ports_mask = 0;
 
 uint8_t dpad_state = 0;
@@ -454,25 +453,6 @@ inline int32_t* get_state_ptr(uint32_t usage, uint8_t hub_port, bool assign_if_a
     return NULL;
 }
 
-inline uint64_t port_usage_key(uint32_t usage, uint8_t hub_port) {
-    return ((uint64_t) hub_port << 32) | usage;
-}
-
-inline uint8_t unmapped_passthrough_layers(uint8_t passthrough_layers, uint8_t global_mapped_layers, uint8_t port_mapped_layers) {
-    return passthrough_layers & ~(global_mapped_layers | port_mapped_layers);
-}
-
-inline uint8_t passthrough_state_port(uint32_t usage, uint8_t hub_port) {
-    auto search = passthrough_specific_source_ports.find(usage);
-    if (search == passthrough_specific_source_ports.end()) {
-        return hub_port;
-    }
-    if ((hub_port >= 1) && (hub_port <= NPORTS) && (search->second & (1u << hub_port))) {
-        return hub_port;
-    }
-    return HUB_PORT_NONE;
-}
-
 #ifdef WBT2_BOOT_INTERFACES
 enum class NumLockSyncStage : uint8_t {
     IDLE,
@@ -698,7 +678,7 @@ void set_mapping_from_config() {
     std::unordered_map<uint64_t, uint8_t> tap_sticky_usage_map;
     std::unordered_map<uint64_t, uint8_t> hold_sticky_usage_map;
     std::unordered_set<uint64_t> tap_hold_usage_set;
-    std::unordered_map<uint64_t, uint8_t> mapped_on_layers;  // source port+usage -> layer mask
+    std::unordered_map<uint32_t, uint8_t> mapped_on_layers;  // usage -> layer mask
 
     validate_expressions();
     invalidate_expr_state_ptr_cache();
@@ -713,7 +693,6 @@ void set_mapping_from_config() {
     memset(tap_hold_state, 0, sizeof(tap_hold_state));
     memset(sticky_state, 0, sizeof(sticky_state));
     active_ports_mask = 0;
-    passthrough_specific_source_ports.clear();
     uint32_t gpio_in_mask_ = 0;
     uint32_t gpio_out_mask_ = 0;
 
@@ -733,7 +712,7 @@ void set_mapping_from_config() {
                 // sticky layer-triggering mappings are forces to NOT be present on the layer they trigger
                 layer_mask &= ~(1 << layer);
                 // but for unmapped passthrough purposes we pretend they are
-                mapped_on_layers[port_usage_key(mapping.source_usage, source_port)] |= (1 << layer) & ((1 << NLAYERS) - 1);
+                mapped_on_layers[mapping.source_usage] |= (1 << layer) & ((1 << NLAYERS) - 1);
             } else {
                 // non-sticky layer-triggering mappings are forced to BE present on the layer they trigger
                 layer_mask |= (1 << layer) & ((1 << NLAYERS) - 1);
@@ -776,8 +755,7 @@ void set_mapping_from_config() {
             uint8_t expr = (mapping.source_usage & 0xFFFF) - 1;
             for (auto const& elem : expressions[expr]) {
                 if (elem.op == Op::PUSH_USAGE) {
-                    // Expressions use the global source state, regardless of their mapping port.
-                    mapped_on_layers[port_usage_key(elem.val, 0)] |= layer_mask;
+                    mapped_on_layers[elem.val] |= layer_mask;
 
                     // if a GPIO pin usage appears in an expression, it's an "in" pin
                     if ((elem.val & 0xFFFF0000) == GPIO_USAGE_PAGE) {
@@ -787,10 +765,7 @@ void set_mapping_from_config() {
                 }
             }
         }
-        mapped_on_layers[port_usage_key(mapping.source_usage, source_port)] |= layer_mask;
-        if (source_port != 0) {
-            passthrough_specific_source_ports[mapping.source_usage] |= 1u << source_port;
-        }
+        mapped_on_layers[mapping.source_usage] |= layer_mask;  // usage mapped on any hub_port is considered to be mapped
         if ((mapping.flags & MAPPING_FLAG_STICKY) != 0) {
             if (mapping.flags & MAPPING_FLAG_TAP) {
                 tap_sticky_usage_map[((uint64_t) source_port << 32) | mapping.source_usage] |= layer_mask;
@@ -877,68 +852,46 @@ void set_mapping_from_config() {
     }
 
     if (unmapped_passthrough_layer_mask) {
-        std::unordered_set<uint32_t> seen_passthrough_usages;
-        auto add_unmapped_passthrough = [&](uint32_t usage) {
-            if (!seen_passthrough_usages.insert(usage).second) {
-                return;
-            }
-            uint8_t global_mapped_layers = mapped_on_layers[port_usage_key(usage, 0)];
-            auto specific_ports_search = passthrough_specific_source_ports.find(usage);
-            if (specific_ports_search == passthrough_specific_source_ports.end()) {
-                uint8_t unmapped_layers = unmapped_passthrough_layers(unmapped_passthrough_layer_mask, global_mapped_layers, 0);
-                if (unmapped_layers && assign_state_slot(usage, 0, false)) {
+        for (auto const& [usage, usage_def] : our_usages_flat) {
+            uint8_t unmapped_layers = unmapped_passthrough_layer_mask & ~mapped_on_layers[usage];
+            if (unmapped_layers) {
+                if (assign_state_slot(usage, 0, false)) {
                     reverse_mapping_map[usage].push_back((map_source_t){
                         .usage = usage,
                         .layer_mask = unmapped_layers,
                         .input_state = get_state_ptr(usage, 0),
                     });
                 }
-                return;
             }
-
-            auto add_port_passthrough = [&](uint8_t state_port, uint8_t orig_source_port) {
-                uint8_t port_mapped_layers = mapped_on_layers[port_usage_key(usage, state_port)];
-                uint8_t unmapped_layers = unmapped_passthrough_layers(unmapped_passthrough_layer_mask, global_mapped_layers, port_mapped_layers);
-                if (unmapped_layers && assign_state_slot(usage, state_port, false)) {
-                    reverse_mapping_map[usage].push_back((map_source_t){
-                        .usage = usage,
-                        .orig_source_port = orig_source_port,
-                        .layer_mask = unmapped_layers,
-                        .input_state = get_state_ptr(usage, state_port),
-                    });
-                }
-            };
-
-            uint16_t specific_ports = specific_ports_search->second;
-            for (uint8_t hub_port = 1; hub_port <= NPORTS; hub_port++) {
-                if (specific_ports & (1u << hub_port)) {
-                    add_port_passthrough(hub_port, hub_port);
-                }
-            }
-            // Direct and non-specific hub inputs share a state that is not tied to active_ports_mask.
-            uint8_t unmapped_layers = unmapped_passthrough_layers(unmapped_passthrough_layer_mask, global_mapped_layers, 0);
-            if (unmapped_layers && assign_state_slot(usage, HUB_PORT_NONE, false)) {
-                reverse_mapping_map[usage].push_back((map_source_t){
-                    .usage = usage,
-                    .layer_mask = unmapped_layers,
-                    .input_state = get_state_ptr(usage, HUB_PORT_NONE),
-                });
-            }
-        };
-
-        for (auto const& [usage, usage_def] : our_usages_flat) {
-            add_unmapped_passthrough(usage);
         }
 
         for (auto const& array_usage : our_array_range_usages) {
             for (uint32_t usage = array_usage.usage; usage <= array_usage.usage_def.usage_maximum; usage++) {
-                add_unmapped_passthrough(usage);
+                uint8_t unmapped_layers = unmapped_passthrough_layer_mask & ~mapped_on_layers[usage];
+                if (unmapped_layers) {
+                    if (assign_state_slot(usage, 0, false)) {
+                        reverse_mapping_map[usage].push_back((map_source_t){
+                            .usage = usage,
+                            .layer_mask = unmapped_layers,
+                            .input_state = get_state_ptr(usage, 0),
+                        });
+                    }
+                }
             }
         }
 
         for (auto const& [report_id, usage_map] : their_usages[OUR_OUT_INTERFACE]) {
             for (auto const& [usage, usage_def] : usage_map) {
-                add_unmapped_passthrough(usage);
+                uint8_t unmapped_layers = unmapped_passthrough_layer_mask & ~mapped_on_layers[usage];
+                if (unmapped_layers) {
+                    if (assign_state_slot(usage, 0, false)) {
+                        reverse_mapping_map[usage].push_back((map_source_t){
+                            .usage = usage,
+                            .layer_mask = unmapped_layers,
+                            .input_state = get_state_ptr(usage, 0),
+                        });
+                    }
+                }
             }
         }
     }
@@ -2123,9 +2076,11 @@ inline void read_input_range(const uint8_t* report, int len, uint32_t source_usa
             if (state_ptr_0 != NULL) {
                 *state_ptr_0 |= 1 << interface_idx;
             }
-            int32_t* state_ptr_n = get_state_ptr(actual_usage, passthrough_state_port(actual_usage, hub_port));
-            if (state_ptr_n != NULL) {
-                *state_ptr_n |= 1u << interface_idx;
+            if (hub_port != HUB_PORT_NONE) {
+                int32_t* state_ptr_n = get_state_ptr(actual_usage, hub_port);
+                if (state_ptr_n != NULL) {
+                    *state_ptr_n = 1 << interface_idx;  // set the bit because in do_handle_received_report we clear it not knowing if it's "0" or "n"
+                }
             }
         }
     }
@@ -2458,7 +2413,9 @@ void handle_received_midi(uint8_t hub_port, uint8_t* midi_msg) {
     }
     if (usage != 0) {
         set_input_state(usage, raw_val, scaled_val, 0);
-        set_input_state(usage, raw_val, scaled_val, passthrough_state_port(usage, hub_port));
+        if (hub_port != HUB_PORT_NONE) {
+            set_input_state(usage, raw_val, scaled_val, hub_port);
+        }
         if (monitor_enabled) {
             monitor_usage(usage, raw_val, hub_port);
         }
@@ -2532,11 +2489,10 @@ void update_their_descriptor_derivates() {
             for (auto [usage, usage_def] : usage_map) {
                 usage_def.should_be_scaled = should_scale_input(usage_def);
                 if (usage_def.usage_maximum == 0) {
-                    uint8_t state_hub_port = passthrough_state_port(usage, hub_port);
                     int32_t* state_ptr_0 = get_state_ptr(usage, 0);
-                    int32_t* state_ptr_n = get_state_ptr(usage, state_hub_port);
+                    int32_t* state_ptr_n = get_state_ptr(usage, hub_port);
                     int32_t* state_ptr_raw_0 = get_state_ptr(usage, 0, false, true);
-                    int32_t* state_ptr_raw_n = get_state_ptr(usage, state_hub_port, false, true);
+                    int32_t* state_ptr_raw_n = get_state_ptr(usage, hub_port, false, true);
                     their_usage_ranges_set.insert(((uint64_t) usage << 32) | usage);
                     if (usage_def.is_relative) {
                         if (state_ptr_0 != NULL) {
@@ -2590,9 +2546,8 @@ void update_their_descriptor_derivates() {
                     their_usage_ranges_set.insert(((uint64_t) usage << 32) | usage_def.usage_maximum);
                     bool any_used = false;
                     for (uint32_t actual_usage = usage; actual_usage <= usage_def.usage_maximum; actual_usage++) {
-                        uint8_t state_hub_port = passthrough_state_port(actual_usage, hub_port);
                         int32_t* state_ptr_0 = get_state_ptr(actual_usage, 0);
-                        int32_t* state_ptr_n = get_state_ptr(actual_usage, state_hub_port);
+                        int32_t* state_ptr_n = get_state_ptr(actual_usage, hub_port);
                         if (state_ptr_0 != NULL) {
                             any_used = true;
                             array_range_usages[interface][report_id].push_back(state_ptr_0);
