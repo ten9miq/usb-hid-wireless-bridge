@@ -4,7 +4,14 @@ WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remap
 
 | 入力 Consumer usage | キーボード出力 | WBT2アプリで割り当てる組み合わせ |
 | --- | --- | --- |
+| Browser `0x000c0223` | Right Shift `0x000700e5` + F1 `0x0007003a` | Right Shift + F1 |
+| Mail `0x000c018a` | Right Shift `0x000700e5` + F2 `0x0007003b` | Right Shift + F2 |
 | Calculator `0x000c0192` | Right Shift `0x000700e5` + F3 `0x0007003c` | Right Shift + F3 |
+| Media Player `0x000c0183` | Right Shift `0x000700e5` + F4 `0x0007003d` | Right Shift + F4 |
+| Previous `0x000c00b6` | Right Shift `0x000700e5` + F5 `0x0007003e` | Right Shift + F5 |
+| Pause/Play `0x000c00cd` | Right Shift `0x000700e5` + F6 `0x0007003f` | Right Shift + F6 |
+| Next `0x000c00b5` | Right Shift `0x000700e5` + F7 `0x00070040` | Right Shift + F7 |
+| Stop `0x000c00b7` | Right Shift `0x000700e5` + F8 `0x00070041` | Right Shift + F8 |
 | Volume Up `0x000c00e9` | Right Shift `0x000700e5` + F9 `0x00070042` | Right Shift + F9 |
 | Volume Down `0x000c00ea` | Right Shift `0x000700e5` + F10 `0x00070043` | Right Shift + F10 |
 | Mute `0x000c00e2` | Right Shift `0x000700e5` + F11 `0x00070044` | Right Shift + F11 |
@@ -13,7 +20,7 @@ WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remap
 
 [`presets/wbt2-consumer-to-rshift-fkeys.json`](../presets/wbt2-consumer-to-rshift-fkeys.json) は **mapping断片** です。HID Remapper Web UIの通常の設定importは設定全体を置き換えるため、この断片を単独でimportしないでください。
 
-まず Web UI の Actions から現在の設定をJSONへexportします。次に、次のコマンドでexport済み設定を複製し、既存の設定値・mapping・macro・expressionを保ったまま、重複しない8 mappingだけを加えます。
+まず Web UI の Actions から現在の設定をJSONへexportします。次に、次のコマンドでexport済み設定を複製し、既存の設定値・mapping・macro・expressionを保ったまま、重複しない22 mappingだけを加えます。すでに同じmappingを含むexportに対して実行した場合は、そのmappingを追加しません。
 
 ```powershell
 .\tools\merge-wbt2-consumer-preset.ps1 `
@@ -23,7 +30,7 @@ WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remap
 
 出力先ファイルが既にある場合は停止するため、既存exportを上書きしません。作成した `*-with-wbt2-media.json` を Web UI でimportしてください。import前のexportは復元用として残します。
 
-このプリセットの `source_port: 0` は全入力portを対象にします。特定の入力機器だけに限定したい場合は、Web UIのMonitorでConsumer usageを押してportを確認してから、8件すべての `source_port` をその番号にそろえてください。出力はA側の通常キーボード出力なので `target_port: 0` のままにします。
+このプリセットの `source_port: 0` は全入力portを対象にします。特定の入力機器だけに限定したい場合は、Web UIのMonitorでConsumer usageを押してportを確認してから、22件すべての `source_port` をその番号にそろえてください。出力はA側の通常キーボード出力なので `target_port: 0` のままにします。
 
 ## Web UIで手入力する場合
 

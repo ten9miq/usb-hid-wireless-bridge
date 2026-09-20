@@ -14,6 +14,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$expectedPresetMappingCount = 22
 
 if (Test-Path -LiteralPath $OutputConfig) {
     throw "OutputConfig already exists: $OutputConfig"
@@ -27,6 +28,9 @@ if ($null -eq $config.mappings) {
 }
 if ($null -eq $presetConfig.mappings) {
     throw 'Preset does not contain a mappings array.'
+}
+if (@($presetConfig.mappings).Count -ne $expectedPresetMappingCount) {
+    throw "Preset must contain exactly $expectedPresetMappingCount mappings; found $(@($presetConfig.mappings).Count)."
 }
 
 function Get-MappingKey($mapping) {
@@ -46,6 +50,7 @@ function Get-MappingKey($mapping) {
 
 $mappings = @($config.mappings)
 $existing = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$presetKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($mapping in $mappings) {
     [void]$existing.Add((Get-MappingKey $mapping))
 }
@@ -53,6 +58,9 @@ foreach ($mapping in $mappings) {
 $added = 0
 foreach ($mapping in @($presetConfig.mappings)) {
     $key = Get-MappingKey $mapping
+    if (-not $presetKeys.Add($key)) {
+        throw 'Preset contains duplicate mappings.'
+    }
     if ($existing.Add($key)) {
         $mappings += $mapping
         $added++
