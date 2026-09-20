@@ -82,6 +82,14 @@ HCD interrupt polling の公平化版を書き込み、HID Remapper → WBT2-V4 
 2. Realforceテンキーの数字入力時、数字は入るがNumLock同期イベント由来と思われる動作音が毎回鳴る。
 3. RealforceキーボードのFn+F3電卓起動、および一部メディアキー（例: 一時停止）がWBT2経由で動作しない。
 
+### 安定版と後続descriptor変更の比較
+
+RollerMouseの位置跳びについて、問題が発生しない個体からフラッシュを読み取り、保存済みUF2と比較した。その個体は `remapper_dual_combined-wbt2-fair-multi-input.uf2`（SHA-256 `D4EF266CA7BA9ABFCF83A83C3C68980E95DAB825FE05941ECABB769A2F658980`）と完全一致した。
+
+一方、後続のproduction版では、HID Hostのpolling処理ではなく、Consumer Control descriptorが変更されている。具体的には、AC Home、AL Email Reader、AL Consumer Control ConfigurationのUsageを追加し、Consumer reportの1-bit項目を9個から12個へ、paddingを6 bitから3 bitへ変更した。
+
+Button 4/5対応を追加する前のproduction版でもRollerMouseの跳びが発生したため、Button descriptor変更だけでは説明できない。診断ログは安定版・production版の双方で無効であることから、ログ削除が原因とは考えにくい。現時点では、Consumer Control descriptor変更が複合HIDの解釈またはレポート処理タイミングへ副作用を与えた可能性を有力仮説として記録する。ただし、同じfair版を基準にConsumer descriptorだけを戻した比較版による実機A/Bが未実施のため、確定原因ではない。
+
 ## 未解決事項と次の切り分け
 
 ## Upstream HID Remapper の既知情報（2026-09-15調査）
