@@ -48,6 +48,12 @@ endpointをSOFごとにone-hot round-robin選択し、1 endpointの連続再arm�
 他のInput interfaceを飢餓させないようにします。VID/PID固有分岐は使用しません。
 SHA-256: `8AE0736398DDB30FCC9E325F63B65F49B1878EA8F202A16AE2513BE677AEF517`
 
+`remapper_dual_combined-wbt2-mouse-buttons-45.uf2`は上記を含む通常運用向けの
+更新版です（`HID_HOST_DIAGNOSTICS=OFF`）。PC側のcombined keyboard/mouse reportと
+Boot Mouse interfaceのどちらもButtons 1–5を宣言し、Button 4/5を先頭byteのbit 3/4で
+送ります。残り3 bitのpaddingにより、X/Y/Wheelを含むmouse payloadは従来どおり4 byteです。
+SHA-256: `8179FB0D29233C9B7F7FEACFB24D277402632ABD017BA64372A2A89EB0416140`
+
 `remapper_dual_combined-wbt2-hid-host-diagnostics-parsed-usage.uf2`は診断専用の
 結合版です（`HID_HOST_DIAGNOSTICS=ON`）。A側でMonitorに渡した相対Cursor X/Yを
 report ID `102`のevent `11`として記録します。通常版と混在させず、診断後は通常版へ

@@ -166,6 +166,10 @@ if (-not $bootKeyboardHex.Contains($expectedKeyboardLeds)) {
 
 $bootMouseBytes = Get-IdlessDescriptorBytes 'boot_mouse_report_descriptor'
 $bootMouseHex = ConvertTo-HexSequence $bootMouseBytes
+$expectedMouseButtons = '05 09 19 01 29 05 15 00 25 01 95 05 75 01 81 02 95 01 75 03 81 03'
+if (-not $bootMouseHex.Contains($expectedMouseButtons)) {
+    throw 'Boot Mouse interface must expose Buttons 1-5 followed by three padding bits'
+}
 $expectedMouseAxes = '09 30 09 31 09 38 15 81 25 7F 75 08 95 03 81 06'
 if (-not $bootMouseHex.Contains($expectedMouseAxes)) {
     throw 'Boot Mouse interface must expose signed 8-bit X, Y, and Wheel fields'
@@ -186,6 +190,9 @@ if (-not $consumerHex.Contains('05 0B 09 2F 95 01 81 02 95 03 81 03')) {
 }
 
 $combinedHex = ConvertTo-HexSequence $bytes.ToArray()
+if (-not $combinedHex.Contains($expectedMouseButtons)) {
+    throw 'Combined keyboard/mouse descriptor must expose Buttons 1-5 followed by three padding bits'
+}
 foreach ($requiredUsage in @('0A 23 02', '0A 8A 01', '0A 83 01')) {
     if (-not $combinedHex.Contains($requiredUsage)) {
         throw "Combined keyboard/mouse descriptor must expose usage $requiredUsage"
@@ -246,6 +253,8 @@ if ($dualBSource -notmatch 'tuh_hid_set_default_protocol\(HID_PROTOCOL_REPORT\);
     BootKeyboardUsageMaximum = '0x65'
     BootMouseWireBytes = 4
     BootMouseHasWheel = $true
+    MouseButtons = 5
+    MousePaddingBits = 3
     InputHostProtocol = 'Report'
     KeyboardLedBits = 5
     KeyboardLedStateCached = $true
