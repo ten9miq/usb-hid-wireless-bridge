@@ -18,11 +18,15 @@ WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remap
 
 ## F1～F3のアプリ起動
 
-WBT2-V4の`Open Browser`、`Mail`、`Open Calculator`は、今回の構成ではPC上の起動処理として安定して動作しませんでした。そのため、F1～F3はAutoHotkeyで代替します。
+WBT2-V4の`Open Browser`、`Mail`、`Open Calculator`は、今回の構成ではPC上の起動処理として安定して動作しませんでした。そのため、F1～F3はAutoHotkeyで代替します。現在使用している実ファイルは [RealForce-WBT2-KeyOverrides.ahk](C:\install\PC\windows設定\AutoHotkey\RealForce-WBT2-KeyOverrides.ahk) です。
 
 ```ahk
 #Requires AutoHotkey v2.0
->+F1::Run "https://www.google.com"
+#SingleInstance Force
+
+bravePath := '"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"'
+
+>+F1::Run(bravePath)
 >+F2::Run "mailto:"
 >+F3::Run "calc.exe"
 ```
