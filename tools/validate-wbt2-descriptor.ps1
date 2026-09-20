@@ -173,8 +173,29 @@ if (-not $bootMouseHex.Contains($expectedMouseAxes)) {
 
 $consumerBytes = Get-IdlessDescriptorBytes 'consumer_report_descriptor'
 $consumerHex = ConvertTo-HexSequence $consumerBytes
-if ((-not $consumerHex.Contains('09 B1')) -or (-not $consumerHex.Contains('0A 92 01'))) {
-    throw 'Consumer interface must expose Pause and AL Calculator usages'
+foreach ($requiredUsage in @('09 B1', '0A 92 01', '0A 23 02', '0A 8A 01', '0A 83 01')) {
+    if (-not $consumerHex.Contains($requiredUsage)) {
+        throw "Consumer interface must expose usage $requiredUsage"
+    }
+}
+if (-not $consumerHex.Contains('75 01 95 0C 81 02')) {
+    throw 'Consumer interface must expose twelve one-bit Consumer usages'
+}
+if (-not $consumerHex.Contains('05 0B 09 2F 95 01 81 02 95 03 81 03')) {
+    throw 'Consumer interface must retain a 16-bit payload with three padding bits'
+}
+
+$combinedHex = ConvertTo-HexSequence $bytes.ToArray()
+foreach ($requiredUsage in @('0A 23 02', '0A 8A 01', '0A 83 01')) {
+    if (-not $combinedHex.Contains($requiredUsage)) {
+        throw "Combined keyboard/mouse descriptor must expose usage $requiredUsage"
+    }
+}
+if (-not $combinedHex.Contains('0A 83 01 75 01 95 0C 81 02')) {
+    throw 'Combined keyboard/mouse descriptor must expose twelve one-bit Consumer usages'
+}
+if (-not $combinedHex.Contains('05 0B 09 2F 95 01 81 02 95 03 81 03')) {
+    throw 'Combined keyboard/mouse descriptor must retain a 16-bit Consumer payload'
 }
 
 $mainSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'main.cc') -Raw
