@@ -150,6 +150,8 @@ std::unordered_map<ReportType, std::unordered_map<uint8_t, uint16_t>> parse_desc
     std::deque<uint32_t> usages;
     uint32_t usage_minimum = 0;
     uint32_t usage_maximum = 0;
+    bool has_usage_minimum = false;
+    bool has_usage_maximum = false;
     int32_t logical_minimum = 0;
     int32_t logical_maximum = 0;
     int32_t unsigned_logical_maximum = 0;
@@ -181,8 +183,26 @@ std::unordered_map<ReportType, std::unordered_map<uint8_t, uint16_t>> parse_desc
             case HID_FEATURE: {
                 ReportType report_type = item_to_report_type(item);
                 bool relative = value & (1 << 2);
-                if ((value & 0x03) == 0x02) {  // scalar
-                    if (usage_minimum && usage_maximum) {
+                // A one-bit Array can encode only two values.  Some NKRO
+                // keyboards nevertheless declare one array element per usage
+                // and send the field as a bit-per-usage bitmap.  The matching
+                // count and range make that intent unambiguous, so interpret
+                // this internally inconsistent Input field as Variable without
+                // relying on a device-specific VID/PID quirk.
+                bool malformed_one_bit_array =
+                    (item == HID_INPUT) &&
+                    ((value & 0x03) == 0x00) &&
+                    (report_size == 1) &&
+                    (logical_minimum == 0) &&
+                    (unsigned_logical_maximum == 1) &&
+                    has_usage_minimum &&
+                    has_usage_maximum &&
+                    (usage_maximum >= usage_minimum) &&
+                    ((uint64_t) usage_maximum - usage_minimum + 1 == report_count) &&
+                    (report_count > 2);
+
+                if (((value & 0x03) == 0x02) || malformed_one_bit_array) {  // scalar
+                    if (has_usage_minimum && has_usage_maximum) {
                         uint32_t usage = usage_minimum;
                         for (uint32_t i = 0; i < report_count; i++) {
                             mark_usage(
@@ -225,7 +245,7 @@ std::unordered_map<ReportType, std::unordered_map<uint8_t, uint16_t>> parse_desc
                         bitpos[report_type][report_id] += report_size * report_count;
                     }
                 } else if ((value & 0x03) == 0x00) {  // array
-                    if (usage_minimum && usage_maximum) {
+                    if (has_usage_minimum && has_usage_maximum) {
                         uint32_t effective_usage_maximum =
                             std::min(usage_maximum, usage_minimum + unsigned_logical_maximum - logical_minimum);
 
@@ -272,12 +292,16 @@ std::unordered_map<ReportType, std::unordered_map<uint8_t, uint16_t>> parse_desc
                 usages.clear();
                 usage_minimum = 0;
                 usage_maximum = 0;
+                has_usage_minimum = false;
+                has_usage_maximum = false;
                 break;
             }
             case HID_COLLECTION:
                 usages.clear();
                 usage_minimum = 0;
                 usage_maximum = 0;
+                has_usage_minimum = false;
+                has_usage_maximum = false;
                 break;
             case HID_USAGE_PAGE:
                 usage_page = value;
@@ -300,11 +324,13 @@ std::unordered_map<ReportType, std::unordered_map<uint8_t, uint16_t>> parse_desc
             case HID_USAGE_MINIMUM: {
                 uint32_t full_usage = item_size <= 2 ? usage_page << 16 | value : value;
                 usage_minimum = full_usage;
+                has_usage_minimum = true;
                 break;
             }
             case HID_USAGE_MAXIMUM: {
                 uint32_t full_usage = item_size <= 2 ? usage_page << 16 | value : value;
                 usage_maximum = full_usage;
+                has_usage_maximum = true;
                 break;
             }
             case HID_LOGICAL_MINIMUM:

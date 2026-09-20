@@ -1,0 +1,160 @@
+diff --git a/src/class/hid/hid_host.c b/src/class/hid/hid_host.c
+index c4d9aa2..5f2c772 100644
+--- a/src/class/hid/hid_host.c
++++ b/src/class/hid/hid_host.c
+@@ -49,6 +49,9 @@ typedef struct {
+   uint8_t itf_num;
+   uint8_t ep_in;
+   uint8_t ep_out;
++#if CFG_TUH_HID_DEFER_INPUT_ENDPOINT
++  tusb_desc_endpoint_t epin_desc;
++#endif
+   bool mounted;           // Enumeration is complete
+ 
+   uint8_t itf_protocol;   // None, Keyboard, Mouse
+@@ -346,13 +349,13 @@ static bool _hidh_set_idle(uint8_t daddr, uint8_t itf_num, uint16_t idle_rate,
+ // Check if HID interface is ready to receive report
+ bool tuh_hid_receive_ready(uint8_t dev_addr, uint8_t idx) {
+   hidh_interface_t* p_hid = get_hid_itf(dev_addr, idx);
+-  TU_VERIFY(p_hid);
++  TU_VERIFY(p_hid && p_hid->ep_in != 0);
+   return !usbh_edpt_busy(dev_addr, p_hid->ep_in);
+ }
+ 
+ bool tuh_hid_receive_report(uint8_t daddr, uint8_t idx) {
+   hidh_interface_t* p_hid = get_hid_itf(daddr, idx);
+-  TU_VERIFY(p_hid);
++  TU_VERIFY(p_hid && p_hid->ep_in != 0);
+ 
+   // claim endpoint
+   TU_VERIFY(usbh_edpt_claim(daddr, p_hid->ep_in));
+@@ -366,7 +369,7 @@ bool tuh_hid_receive_report(uint8_t daddr, uint8_t idx) {
+ }
+ bool tuh_hid_receive_abort(uint8_t dev_addr, uint8_t idx) {
+   hidh_interface_t* p_hid = get_hid_itf(dev_addr, idx);
+-  TU_VERIFY(p_hid);
++  TU_VERIFY(p_hid && p_hid->ep_in != 0);
+   return tuh_edpt_abort_xfer(dev_addr, p_hid->ep_in);
+ }
+ 
+@@ -491,14 +494,23 @@ bool hidh_open(uint8_t rhport, uint8_t daddr, tusb_desc_interface_t const* desc_
+ 
+   for (int i = 0; i < desc_itf->bNumEndpoints; i++) {
+     TU_ASSERT(TUSB_DESC_ENDPOINT == desc_ep->bDescriptorType);
+-    TU_ASSERT(tuh_edpt_open(daddr, desc_ep));
+ 
+     if (tu_edpt_dir(desc_ep->bEndpointAddress) == TUSB_DIR_IN) {
++#if CFG_TUH_HID_DEFER_INPUT_ENDPOINT
++      if (p_hid->epin_desc.bLength == 0) {
++        memcpy(&p_hid->epin_desc, desc_ep, sizeof(tusb_desc_endpoint_t));
++      }
++#else
++      TU_ASSERT(tuh_edpt_open(daddr, desc_ep));
+       p_hid->ep_in = desc_ep->bEndpointAddress;
+       p_hid->epin_size = tu_edpt_packet_size(desc_ep);
++#endif
++#if CFG_TUH_HID_OPEN_OUT_ENDPOINT
+     } else {
++      TU_ASSERT(tuh_edpt_open(daddr, desc_ep));
+       p_hid->ep_out = desc_ep->bEndpointAddress;
+       p_hid->epout_size = tu_edpt_packet_size(desc_ep);
++#endif
+     }
+ 
+     p_desc = tu_desc_next(p_desc);
+@@ -608,6 +620,41 @@ static void process_set_config(tuh_xfer_t* xfer) {
+ static void config_driver_mount_complete(uint8_t daddr, uint8_t idx, uint8_t const* desc_report, uint16_t desc_len) {
+   hidh_interface_t* p_hid = get_hid_itf(daddr, idx);
+   TU_VERIFY(p_hid,);
++#if CFG_TUH_HID_DEFER_INPUT_ENDPOINT
++  bool has_input = false;
++  uint16_t offset = 0;
++  while (desc_report && offset < desc_len) {
++    uint8_t const prefix = desc_report[offset++];
++    if (prefix == 0xfe) {
++      if ((desc_len - offset) < 2) break;
++      uint8_t const item_size = desc_report[offset];
++      offset += 2;
++      if (item_size > (desc_len - offset)) break;
++      offset += item_size;
++      continue;
++    }
++
++    uint8_t item_size = prefix & 0x03u;
++    if (item_size == 3) item_size = 4;
++    if (item_size > (desc_len - offset)) break;
++    if ((prefix & 0xfcu) == 0x80u) {
++      has_input = true;
++      break;
++    }
++    offset += item_size;
++  }
++
++  if (has_input && p_hid->epin_desc.bLength) {
++    if (!tuh_edpt_open(daddr, &p_hid->epin_desc)) {
++      uint8_t const itf_num = p_hid->itf_num;
++      tu_memclr(p_hid, sizeof(hidh_interface_t));
++      usbh_driver_set_config_complete(daddr, itf_num);
++      return;
++    }
++    p_hid->ep_in = p_hid->epin_desc.bEndpointAddress;
++    p_hid->epin_size = tu_edpt_packet_size(&p_hid->epin_desc);
++  }
++#endif
+   p_hid->mounted = true;
+ 
+   // enumeration is complete
+diff --git a/src/class/hid/hid_host.h b/src/class/hid/hid_host.h
+index 9681c70..d2dc75c 100644
+--- a/src/class/hid/hid_host.h
++++ b/src/class/hid/hid_host.h
+@@ -46,6 +46,14 @@ extern "C" {
+ #define CFG_TUH_HID_EPOUT_BUFSIZE 64
+ #endif
+ 
++#ifndef CFG_TUH_HID_OPEN_OUT_ENDPOINT
++#define CFG_TUH_HID_OPEN_OUT_ENDPOINT 1
++#endif
++
++#ifndef CFG_TUH_HID_DEFER_INPUT_ENDPOINT
++#define CFG_TUH_HID_DEFER_INPUT_ENDPOINT 0
++#endif
++
+ 
+ typedef struct {
+   uint8_t report_id;
+diff --git a/src/portable/raspberrypi/rp2040/hcd_rp2040.c b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+index a9cb3a2..8c087df 100644
+--- a/src/portable/raspberrypi/rp2040/hcd_rp2040.c
++++ b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+@@ -280,10 +280,9 @@ void __tusb_irq_path_func(hcd_int_handler)(uint8_t rhport, bool in_isr) {
+ 
+ static struct hw_endpoint *_next_free_interrupt_ep(void)
+ {
+-  struct hw_endpoint * ep = NULL;
+   for ( uint i = 1; i < TU_ARRAY_SIZE(ep_pool); i++ )
+   {
+-    ep = &ep_pool[i];
++    struct hw_endpoint * ep = &ep_pool[i];
+     if ( !ep->configured )
+     {
+       // Will be configured by _hw_endpoint_init / _hw_endpoint_allocate
+@@ -291,7 +290,7 @@ static struct hw_endpoint *_next_free_interrupt_ep(void)
+       return ep;
+     }
+   }
+-  return ep;
++  return NULL;
+ }
+ 
+ static struct hw_endpoint *_hw_endpoint_allocate(uint8_t transfer_type)
+@@ -303,8 +302,8 @@ static struct hw_endpoint *_hw_endpoint_allocate(uint8_t transfer_type)
+     // Note: even though datasheet name these "Interrupt" endpoints. These are actually
+     // "Asynchronous" endpoints and can be used for other type such as: Bulk  (ISO need confirmation)
+     ep = _next_free_interrupt_ep();
++    TU_ASSERT(ep, NULL);
+     pico_info("Allocate %s ep %d\n", tu_edpt_type_str(transfer_type), ep->interrupt_num);
+-    assert(ep);
+     ep->buffer_control = &usbh_dpram->int_ep_buffer_ctrl[ep->interrupt_num].ctrl;
+     ep->endpoint_control = &usbh_dpram->int_ep_ctrl[ep->interrupt_num].ctrl;
+     // 0 for epx (double buffered): TODO increase to 1024 for ISO

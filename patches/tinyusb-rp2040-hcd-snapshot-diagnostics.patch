@@ -1,0 +1,115 @@
+diff --git a/src/host/hcd.h b/src/host/hcd.h
+--- a/src/host/hcd.h
++++ b/src/host/hcd.h
+@@ -208,4 +208,21 @@ extern void tuh_diagnostic_event_cb(uint8_t event, uint8_t dev_addr,
+                                     uint8_t detail, uint8_t result,
+                                     uint16_t value);
+ 
++typedef struct {
++  uint8_t interrupt_slot_count;
++  uint8_t int_ep_suppressed;
++  uint8_t epx_state;
++  uint32_t control_timeout_count;
++  uint32_t saved_int_ep_ctrl;
++  uint32_t current_int_ep_ctrl;
++  uint16_t interrupt_enable_mask;
++  uint16_t configured_mask;
++  uint16_t claimed_mask;
++  uint16_t active_mask;
++  uint16_t busy_mask;
++} hcd_rp2040_diagnostic_snapshot_t;
++
++bool hcd_rp2040_diagnostic_snapshot(hcd_rp2040_diagnostic_snapshot_t* snapshot);
++bool usbh_diagnostic_edpt_state(uint8_t dev_addr, uint8_t ep_addr,
++                                bool* claimed, bool* busy);
+ #endif
+diff --git a/src/host/usbh.c b/src/host/usbh.c
+--- a/src/host/usbh.c
++++ b/src/host/usbh.c
+@@ -974,4 +974,18 @@ bool usbh_edpt_busy(uint8_t dev_addr, uint8_t ep_addr) {
+   return dev->ep_status[epnum][dir].busy;
+ }
+ 
++#ifdef HID_HOST_DIAGNOSTICS
++bool usbh_diagnostic_edpt_state(uint8_t dev_addr, uint8_t ep_addr,
++                                bool* claimed, bool* busy) {
++  usbh_device_t* dev = get_device(dev_addr);
++  if (!dev) return false;
++
++  uint8_t const epnum = tu_edpt_number(ep_addr);
++  uint8_t const dir = tu_edpt_dir(ep_addr);
++  *claimed = dev->ep_status[epnum][dir].claimed;
++  *busy = dev->ep_status[epnum][dir].busy;
++  return true;
++}
++#endif
++
+ //--------------------------------------------------------------------+
+diff --git a/src/portable/raspberrypi/rp2040/hcd_rp2040.c b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+--- a/src/portable/raspberrypi/rp2040/hcd_rp2040.c
++++ b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+@@ -67,2 +67,5 @@ static uint32_t saved_int_ep_ctrl;
+ static bool int_ep_suppressed;
++#ifdef HID_HOST_DIAGNOSTICS
++static uint32_t diagnostic_control_timeout_count;
++#endif
+ 
+@@ -273,2 +276,5 @@ static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
+     usb_hw_clear->sie_status = USB_SIE_STATUS_RX_TIMEOUT_BITS;
++#ifdef HID_HOST_DIAGNOSTICS
++    if (epx.active) diagnostic_control_timeout_count++;
++#endif
+   }
+@@ -450,2 +456,5 @@ bool hcd_init(uint8_t rhport)
+   int_ep_suppressed = false;
++#ifdef HID_HOST_DIAGNOSTICS
++  diagnostic_control_timeout_count = 0;
++#endif
+ 
+@@ -570,5 +579,46 @@ void hcd_int_disable(uint8_t rhport)
+ //--------------------------------------------------------------------+
+ // Endpoint API
+ //--------------------------------------------------------------------+
+ 
++#ifdef HID_HOST_DIAGNOSTICS
++bool hcd_rp2040_diagnostic_snapshot(hcd_rp2040_diagnostic_snapshot_t* snapshot)
++{
++  TU_VERIFY(snapshot);
++  memset(snapshot, 0, sizeof(*snapshot));
++
++  uint32_t const irq_state = save_and_disable_interrupts();
++  snapshot->interrupt_slot_count = PICO_USB_HOST_INTERRUPT_ENDPOINTS;
++  snapshot->int_ep_suppressed = int_ep_suppressed;
++  snapshot->epx_state = (epx.configured ? 0x01u : 0u) |
++                        (epx.active ? 0x02u : 0u) |
++                        (epx.pending ? 0x04u : 0u);
++  snapshot->control_timeout_count = diagnostic_control_timeout_count;
++  snapshot->saved_int_ep_ctrl = saved_int_ep_ctrl;
++  snapshot->current_int_ep_ctrl = usb_hw->int_ep_ctrl;
++  snapshot->interrupt_enable_mask =
++      (uint16_t) ((snapshot->current_int_ep_ctrl & USB_INT_EP_CTRL_BITS) >> 1);
++
++  for (uint i = 1; i < TU_ARRAY_SIZE(ep_pool); i++)
++  {
++    struct hw_endpoint const* ep = &ep_pool[i];
++    uint16_t const bit = (uint16_t) (1u << (i - 1));
++    if (ep->configured) snapshot->configured_mask |= bit;
++    if (ep->active) snapshot->active_mask |= bit;
++
++    if (ep->configured)
++    {
++      bool claimed = false;
++      bool busy = false;
++      if (usbh_diagnostic_edpt_state(ep->dev_addr, ep->ep_addr, &claimed, &busy))
++      {
++        if (claimed) snapshot->claimed_mask |= bit;
++        if (busy) snapshot->busy_mask |= bit;
++      }
++    }
++  }
++  restore_interrupts(irq_state);
++  return true;
++}
++#endif
++
+ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_endpoint_t const * ep_desc)

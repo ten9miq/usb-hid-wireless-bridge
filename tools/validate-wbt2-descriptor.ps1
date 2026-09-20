@@ -98,7 +98,7 @@ for ($index = 0; $index -lt $bytes.Count;) {
     }
 }
 
-$expectedInputBits = @{ 1 = 32; 2 = 64; 3 = 8 }
+$expectedInputBits = @{ 1 = 32; 2 = 64; 3 = 16 }
 foreach ($id in $expectedInputBits.Keys) {
     if ($inputBits[$id] -ne $expectedInputBits[$id]) {
         throw "Report ID $id input size is $($inputBits[$id]) bits; expected $($expectedInputBits[$id])"
@@ -171,6 +171,12 @@ if (-not $bootMouseHex.Contains($expectedMouseAxes)) {
     throw 'Boot Mouse interface must expose signed 8-bit X, Y, and Wheel fields'
 }
 
+$consumerBytes = Get-IdlessDescriptorBytes 'consumer_report_descriptor'
+$consumerHex = ConvertTo-HexSequence $consumerBytes
+if ((-not $consumerHex.Contains('09 B1')) -or (-not $consumerHex.Contains('0A 92 01'))) {
+    throw 'Consumer interface must expose Pause and AL Calculator usages'
+}
+
 $mainSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'main.cc') -Raw
 if ($mainSource -notmatch 'tud_hid_n_report\(interface,\s*0,\s*report_with_id\s*\+\s*1,\s*len\s*-\s*1\)') {
     throw 'The split interfaces must send their complete payload without a Report ID'
@@ -181,6 +187,24 @@ if (($tinyUsbSource -notmatch 'keyboard_led_state\s*=\s*buffer\[0\]\s*&\s*0x1F')
     ($tinyUsbSource -notmatch 'handle_set_report0\(REPORT_ID_LEDS,\s*&keyboard_led_state,\s*1\)') -or
     ($tinyUsbSource -notmatch 'buffer\[0\]\s*=\s*keyboard_led_state')) {
     throw 'The A-side keyboard interface must cache, normalize, forward, and return its LED state'
+}
+
+$descriptorParserSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'descriptor_parser.cc') -Raw
+if (($descriptorParserSource -notmatch 'malformed_one_bit_array') -or
+    ($descriptorParserSource -notmatch 'report_size\s*==\s*1') -or
+    ($descriptorParserSource -notmatch 'unsigned_logical_maximum\s*==\s*1') -or
+    ($descriptorParserSource -notmatch 'usage_maximum\s*-\s*usage_minimum\s*\+\s*1\s*==\s*report_count')) {
+    throw 'Malformed one-bit NKRO Array inputs must be normalized from bitmap structure'
+}
+
+$remapperSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'remapper.cc') -Raw
+if (($remapperSource -notmatch 'NumLockSyncStage::WAIT_KEYPAD') -or
+    ($remapperSource -notmatch 'NumLockSyncStage::KEYPAD_ACTIVE') -or
+    ($remapperSource -notmatch 'NumLockSyncStage::WAIT_TRAILING_DOWN') -or
+    ($remapperSource -notmatch 'NumLockSyncStage::TRAILING_DOWN') -or
+    ($remapperSource -notmatch 'replay_first_num_lock_tap') -or
+    ($remapperSource -notmatch 'clear_report_usage\(filtered_report,\s*len,\s*usage_map,\s*NUM_LOCK_USAGE\)')) {
+    throw 'The input path must suppress only complete NumLock/Keypad/NumLock synchronization sequences'
 }
 
 $dualBSource = Get-Content -LiteralPath (Join-Path (Split-Path $SourcePath) 'remapper_dual_b.cc') -Raw
@@ -204,4 +228,6 @@ if ($dualBSource -notmatch 'tuh_hid_set_default_protocol\(HID_PROTOCOL_REPORT\);
     InputHostProtocol = 'Report'
     KeyboardLedBits = 5
     KeyboardLedStateCached = $true
+    MalformedNkroBitmapNormalized = $true
+    NumLockKeypadWrapperFiltered = $true
 }

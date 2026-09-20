@@ -325,6 +325,13 @@ int main() {
             monitor_interface = 3;
         }
 #endif
+#ifdef HID_HOST_DIAGNOSTICS
+        // Keep diagnostic heartbeats independent of monitor traffic on the
+        // shared configuration interface.
+        if (tud_hid_n_ready(monitor_interface)) {
+            send_hid_host_diagnostic_report(do_send_report, monitor_interface);
+        }
+#endif
         if (monitor_enabled && tud_hid_n_ready(monitor_interface)) {
             send_monitor_report(do_send_report);
         }

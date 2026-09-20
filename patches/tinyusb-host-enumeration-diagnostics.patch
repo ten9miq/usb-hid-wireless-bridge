@@ -1,0 +1,105 @@
+diff --git a/src/class/hid/hid_host.c b/src/class/hid/hid_host.c
+--- a/src/class/hid/hid_host.c
++++ b/src/class/hid/hid_host.c
+@@ -30,5 +30,8 @@
+ 
+ #include "host/usbh.h"
+ #include "host/usbh_pvt.h"
++#ifdef HID_HOST_DIAGNOSTICS
++#include "host/hcd.h"
++#endif
+ 
+ #include "hid_host.h"
+@@ -482,6 +485,15 @@ bool hidh_open(uint8_t rhport, uint8_t daddr, tusb_desc_interface_t const* desc_
+   TU_ASSERT(HID_DESC_TYPE_HID == desc_hid->bDescriptorType);
+ 
+   hidh_interface_t* p_hid = find_new_itf();
++#ifdef HID_HOST_DIAGNOSTICS
++  if (!p_hid) {
++    hcd_devtree_info_t devtree_info;
++    hcd_devtree_get_info(daddr, &devtree_info);
++    tuh_diagnostic_event_cb(10, daddr, devtree_info.hub_addr,
++                            devtree_info.hub_port, desc_itf->bInterfaceNumber,
++                            0, CFG_TUH_HID);
++  }
++#endif
+   TU_ASSERT(p_hid); // not enough interface, try to increase CFG_TUH_HID
+   p_hid->daddr = daddr;
+ 
+diff --git a/src/host/hcd.h b/src/host/hcd.h
+--- a/src/host/hcd.h
++++ b/src/host/hcd.h
+@@ -199,6 +199,16 @@ extern void hcd_devtree_get_info(uint8_t dev_addr, hcd_devtree_info_t* devtree_i
+ // Called by HCD to notify stack
+ extern void hcd_event_handler(hcd_event_t const* event, bool in_isr);
+ 
++// Optional application hook for diagnostic firmware.  TinyUSB does not make
++// normal builds depend on it: the declaration and every call disappear unless
++// the diagnostic CMake option is enabled for the host library.
++#ifdef HID_HOST_DIAGNOSTICS
++extern void tuh_diagnostic_event_cb(uint8_t event, uint8_t dev_addr,
++                                    uint8_t hub_addr, uint8_t hub_port,
++                                    uint8_t detail, uint8_t result,
++                                    uint16_t value);
++#endif
++
+ // Helper to send device attach event
+ TU_ATTR_ALWAYS_INLINE static inline
+ void hcd_event_device_attach(uint8_t rhport, bool in_isr) {
+diff --git a/src/host/usbh.c b/src/host/usbh.c
+--- a/src/host/usbh.c
++++ b/src/host/usbh.c
+@@ -497,4 +497,11 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+ 
+     switch (event.event_id) {
+       case HCD_EVENT_DEVICE_ATTACH:
++#ifdef HID_HOST_DIAGNOSTICS
++        // This is the earliest stack-visible point for a downstream hub port:
++        // no USB address has been allocated yet, so dev_addr is intentionally
++        // zero while hub_addr/hub_port identify the physical connection.
++        tuh_diagnostic_event_cb(6, 0, event.connection.hub_addr,
++                                event.connection.hub_port, 0, 0, 0);
++#endif
+         // due to the shared _usbh_ctrl_buf, we must complete enumerating one device before enumerating another one.
+@@ -517,4 +524,8 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+         break;
+ 
+       case HCD_EVENT_DEVICE_REMOVE:
++#ifdef HID_HOST_DIAGNOSTICS
++        tuh_diagnostic_event_cb(7, event.dev_addr, event.connection.hub_addr,
++                                event.connection.hub_port, 0, 0, 0);
++#endif
+         TU_LOG_USBH("[%u:%u:%u] USBH DEVICE REMOVED\r\n", event.rhport, event.connection.hub_addr, event.connection.hub_port);
+@@ -939,5 +950,15 @@ static bool usbh_edpt_control_open(uint8_t dev_addr, uint8_t max_packet_size) {
+ 
+ bool tuh_edpt_open(uint8_t dev_addr, tusb_desc_endpoint_t const* desc_ep) {
+   TU_ASSERT(tu_edpt_validate(desc_ep, tuh_speed_get(dev_addr)));
+-  return hcd_edpt_open(usbh_get_rhport(dev_addr), dev_addr, desc_ep);
++  bool const opened = hcd_edpt_open(usbh_get_rhport(dev_addr), dev_addr, desc_ep);
++#ifdef HID_HOST_DIAGNOSTICS
++  if (!opened) {
++    hcd_devtree_info_t devtree_info;
++    hcd_devtree_get_info(dev_addr, &devtree_info);
++    tuh_diagnostic_event_cb(9, dev_addr, devtree_info.hub_addr,
++                            devtree_info.hub_port, desc_ep->bEndpointAddress,
++                            0, tu_edpt_packet_size(desc_ep));
++  }
++#endif
++  return opened;
+ }
+@@ -1331,4 +1352,15 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+   static uint8_t failed_count = 0;
+ 
+   if (XFER_RESULT_SUCCESS != xfer->result) {
++#ifdef HID_HOST_DIAGNOSTICS
++    // Report every failed enumeration control transfer, including retries.
++    // The stage lets the viewer distinguish device/config descriptor and
++    // SET_CONFIGURATION failures without relying on TinyUSB log output.
++    hcd_devtree_info_t devtree_info;
++    hcd_devtree_get_info(xfer->daddr, &devtree_info);
++    tuh_diagnostic_event_cb(8, xfer->daddr, devtree_info.hub_addr,
++                            devtree_info.hub_port, (uint8_t) xfer->user_data,
++                            (uint8_t) xfer->result,
++                            xfer->setup ? xfer->setup->bRequest : 0);
++#endif
+     // retry if not reaching max attempt

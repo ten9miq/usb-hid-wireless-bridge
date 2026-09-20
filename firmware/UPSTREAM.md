@@ -11,6 +11,20 @@ recorded in `patches/wbt2-v4-simple-reports.patch` so that stage can be applied
 to a clean copy of the pinned upstream commit. The later Boot-interface stage
 is maintained in the vendored source and described below.
 
+RP2040 HCD snapshot diagnostics are recorded separately in
+`patches/tinyusb-rp2040-hcd-snapshot-diagnostics.patch`. Apply it after
+`tinyusb-host-enumeration-diagnostics.patch` and
+`tinyusb-rp2040-epx-interrupt-race.patch`; it depends on both diagnostic hooks
+and the EPX interrupt-suppression state introduced by those patches.
+
+RP2040 asynchronous interrupt-endpoint polling fairness is recorded in
+`patches/tinyusb-rp2040-interrupt-polling-fairness.patch`. Apply the RP2040
+patches in this order: `tinyusb-rp2040-hid-endpoint-capacity.patch`,
+`tinyusb-rp2040-epx-interrupt-race.patch`,
+`tinyusb-rp2040-hcd-snapshot-diagnostics.patch`, then this fairness patch.
+The snapshot patch still requires `tinyusb-host-enumeration-diagnostics.patch`
+before the RP2040 sequence.
+
 ## A/B scope
 
 - Keep the existing two-interface USB configuration unchanged: the remapped
@@ -62,3 +76,18 @@ forwards a normalized one-byte value into the existing usage-based output
 mapping, and returns the same value for an Output GET_REPORT request.  This
 keeps Num Lock and the other standard LED usages available across physical
 keyboard enumeration without adding device-specific handling.
+
+Some keyboards also advertise an NKRO bitmap as a one-bit Array input even
+though they send one independent bit per usage.  The descriptor parser treats
+that field as Variable only when the usage-range cardinality exactly matches
+the report count (and is greater than two), with logical range 0 through 1.
+This is the generic structural equivalent of the Linux Topre Array-to-Variable
+report-descriptor fix and does not depend on a VID/PID table.
+
+Some keypads emit a short Num Lock tap before a keypad press and another short
+tap after its release to maintain their internal lock state.  The WBT2 input
+path recognizes the complete usage-state sequence, suppresses only the two
+wrapper taps, and leaves the keypad usage unchanged.  An incomplete sequence
+replays the withheld Num Lock down/up pair on consecutive mapping frames, and
+a held Num Lock is passed through with its matching release.  Recognition is
+based on report usages and timing rather than a VID/PID table.

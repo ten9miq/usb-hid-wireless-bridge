@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <queue>
 #include <set>
 #include <unordered_map>
@@ -12,6 +13,8 @@
 #include "config.h"
 #include "crc.h"
 #include "descriptor_parser.h"
+#include "hid_host_diagnostics.h"
+#include "hid_report_bits.h"
 #include "globals.h"
 #include "our_descriptor.h"
 #include "platform.h"
@@ -36,6 +39,7 @@ const uint32_t REGISTER_USAGE_PAGE = 0xFFF50000;
 const uint32_t MIDI_USAGE_PAGE = 0xFFF70000;
 
 const uint32_t ROLLOVER_USAGE = 0x00070001;
+const uint32_t NUM_LOCK_USAGE = 0x00070053;
 
 const uint16_t STACK_SIZE = 16;
 
@@ -110,6 +114,95 @@ std::unordered_map<uint32_t, int32_t> monitor_input_state;
 uint8_t monitor_usages_queued = 0;
 monitor_report_t monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
 uint8_t monitor_report_idx = 0;
+
+#ifdef HID_HOST_DIAGNOSTICS
+inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t size);
+static const uint8_t HID_HOST_DIAGNOSTIC_QUEUE_SIZE = 8;
+static hid_host_diagnostic_t hid_host_diagnostics[HID_HOST_DIAGNOSTIC_QUEUE_SIZE];
+static uint8_t hid_host_diagnostic_head = 0;
+static uint8_t hid_host_diagnostic_tail = 0;
+static uint8_t hid_host_diagnostic_items = 0;
+static uint64_t next_hid_host_diagnostic_heartbeat = 0;
+// A counter packet follows each heartbeat before ordinary queued diagnostics.
+// This gives the WebHID viewer a bounded-latency per-device snapshot even
+// when descriptor fragments or other diagnostic traffic keep the queue busy.
+static bool hid_host_diagnostic_counter_snapshot_pending = false;
+static bool hid_host_hcd_snapshot_pending = false;
+static bool hid_host_diagnostic_transport_snapshot_pending = false;
+static const uint64_t HID_HOST_DIAGNOSTIC_HEARTBEAT_US = 1000000;
+// Ports 0..15 and one slot for an unknown/unassigned physical port.
+static const uint8_t HID_HOST_DIAGNOSTIC_PORTS = 17;
+static uint64_t next_hid_host_diagnostic_parsed_usage[HID_HOST_DIAGNOSTIC_PORTS][2] = {};
+static uint32_t hid_host_usage_counters[HID_HOST_DIAGNOSTIC_PORTS][7] = {};
+static bool hid_host_usage_seen[HID_HOST_DIAGNOSTIC_PORTS] = {};
+static uint32_t hid_host_output_counters[7] = {};
+static uint8_t hid_host_pipeline_snapshot_cursor = HID_HOST_DIAGNOSTIC_PORTS + 1;
+static const uint64_t HID_HOST_DIAGNOSTIC_PARSED_USAGE_US = 250000;
+static_assert(sizeof(hid_host_diagnostic_t) == 58,
+              "HID host diagnostic payload must fit the 63-byte input report");
+
+static uint8_t diagnostic_port_index(uint8_t hub_port) {
+    return hub_port < 16 ? hub_port : 16;
+}
+
+static bool diagnostic_cursor_usage(uint32_t usage) {
+    return (usage == 0x00010030) || (usage == 0x00010031);
+}
+
+static void make_hid_host_pipeline_snapshot(hid_host_diagnostic_t& snapshot,
+                                          HidHostDiagnosticEvent event,
+                                          uint8_t hub_port, const uint32_t* counters) {
+    snapshot.event = event;
+    snapshot.flags = HID_HOST_DIAGNOSTIC_FLAG_SUCCESS;
+    snapshot.hub_port = hub_port;
+    snapshot.report_bytes_length = 8;
+    snapshot.report_descriptor_bytes_length = 20;
+    memcpy(snapshot.report_bytes, counters, 8);
+    memcpy(snapshot.report_descriptor_bytes, counters + 2, 20);
+}
+
+static bool diagnostic_report_has_motion(uint8_t report_id, const uint8_t* report) {
+    for (uint32_t usage : { 0x00010030u, 0x00010031u }) {
+        auto found = our_usages_flat.find(usage);
+        if (found == our_usages_flat.end()) {
+            continue;
+        }
+        const usage_def_t& def = found->second;
+        if ((def.report_id == report_id) &&
+            (get_bits(report, report_sizes[report_id], def.bitpos, def.size) != 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void queue_hid_host_parsed_usage(uint16_t interface, uint32_t usage, int32_t value, uint8_t hub_port) {
+    if ((usage != 0x00010030) && (usage != 0x00010031)) {
+        return;
+    }
+
+    uint8_t usage_index = usage & 1;
+    uint8_t port_index = diagnostic_port_index(hub_port);
+    uint64_t now = get_time();
+    if ((next_hid_host_diagnostic_parsed_usage[port_index][usage_index] != 0) &&
+        (now < next_hid_host_diagnostic_parsed_usage[port_index][usage_index])) {
+        return;
+    }
+
+    hid_host_diagnostic_t diagnostic = {};
+    diagnostic.event = HidHostDiagnosticEvent::PARSED_USAGE;
+    diagnostic.flags = HID_HOST_DIAGNOSTIC_FLAG_SUCCESS;
+    diagnostic.dev_addr = interface >> 8;
+    diagnostic.instance = interface & 0xFF;
+    diagnostic.hub_port = hub_port;
+    diagnostic.report_length = sizeof(diagnostic.report_bytes);
+    diagnostic.report_bytes_length = sizeof(diagnostic.report_bytes);
+    memcpy(diagnostic.report_bytes, &usage, sizeof(usage));
+    memcpy(diagnostic.report_bytes + sizeof(usage), &value, sizeof(value));
+    queue_hid_host_diagnostic((const uint8_t*) &diagnostic, sizeof(diagnostic));
+    next_hid_host_diagnostic_parsed_usage[port_index][usage_index] = now + HID_HOST_DIAGNOSTIC_PARSED_USAGE_US;
+}
+#endif
 
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
@@ -359,6 +452,207 @@ inline int32_t* get_state_ptr(uint32_t usage, uint8_t hub_port, bool assign_if_a
 
     return NULL;
 }
+
+#ifdef WBT2_BOOT_INTERFACES
+enum class NumLockSyncStage : uint8_t {
+    IDLE,
+    FIRST_DOWN,
+    WAIT_KEYPAD,
+    KEYPAD_ACTIVE,
+    WAIT_TRAILING_DOWN,
+    TRAILING_DOWN,
+    PASSTHROUGH_DOWN,
+};
+
+struct num_lock_sync_filter_t {
+    NumLockSyncStage stage = NumLockSyncStage::IDLE;
+    std::unordered_map<uint8_t, bool> num_lock_by_report;
+    std::unordered_map<uint8_t, bool> keypad_by_report;
+    std::deque<bool> pending_output_states;
+    bool previous_num_lock = false;
+    bool previous_keypad = false;
+    bool output_num_lock = false;
+    uint64_t deadline = 0;
+};
+
+static const uint64_t NUM_LOCK_SYNC_EDGE_US = 20000;
+static std::unordered_map<uint16_t, num_lock_sync_filter_t> num_lock_sync_filters;
+
+static void queue_num_lock_state(num_lock_sync_filter_t& filter, bool state) {
+    bool last_state = filter.pending_output_states.empty()
+        ? filter.output_num_lock
+        : filter.pending_output_states.back();
+    if (last_state != state) {
+        filter.pending_output_states.push_back(state);
+    }
+}
+
+static void replay_first_num_lock_tap(num_lock_sync_filter_t& filter) {
+    queue_num_lock_state(filter, true);
+    queue_num_lock_state(filter, false);
+}
+
+static void advance_num_lock_sync_timeout(num_lock_sync_filter_t& filter, uint64_t now) {
+    if ((filter.deadline == 0) || (now < filter.deadline)) {
+        return;
+    }
+
+    switch (filter.stage) {
+        case NumLockSyncStage::FIRST_DOWN:
+            // A held Num Lock is not a short synchronization tap.
+            queue_num_lock_state(filter, true);
+            filter.stage = NumLockSyncStage::PASSTHROUGH_DOWN;
+            break;
+        case NumLockSyncStage::WAIT_KEYPAD:
+        case NumLockSyncStage::WAIT_TRAILING_DOWN:
+            // The complete wrapper was not observed. Replay the withheld tap
+            // as a coherent down/up pair on consecutive mapping frames.
+            replay_first_num_lock_tap(filter);
+            filter.stage = NumLockSyncStage::IDLE;
+            break;
+        case NumLockSyncStage::TRAILING_DOWN:
+            // A trailing press held by the user is not the short closing tap.
+            replay_first_num_lock_tap(filter);
+            queue_num_lock_state(filter, true);
+            filter.stage = NumLockSyncStage::PASSTHROUGH_DOWN;
+            break;
+        default:
+            break;
+    }
+    filter.deadline = 0;
+}
+
+static void observe_num_lock_sync_state(
+    num_lock_sync_filter_t& filter, bool num_lock, bool keypad, uint64_t now) {
+    advance_num_lock_sync_timeout(filter, now);
+    bool num_lock_down = num_lock && !filter.previous_num_lock;
+    bool num_lock_up = !num_lock && filter.previous_num_lock;
+    bool keypad_down = keypad && !filter.previous_keypad;
+    bool keypad_up = !keypad && filter.previous_keypad;
+
+    switch (filter.stage) {
+        case NumLockSyncStage::IDLE:
+            if (num_lock_down) {
+                filter.stage = NumLockSyncStage::FIRST_DOWN;
+                filter.deadline = now + NUM_LOCK_SYNC_EDGE_US;
+            }
+            break;
+        case NumLockSyncStage::FIRST_DOWN:
+            if (num_lock_up) {
+                filter.stage = keypad ? NumLockSyncStage::KEYPAD_ACTIVE : NumLockSyncStage::WAIT_KEYPAD;
+                filter.deadline = keypad ? 0 : now + NUM_LOCK_SYNC_EDGE_US;
+            } else if (keypad_down) {
+                queue_num_lock_state(filter, true);
+                filter.stage = NumLockSyncStage::PASSTHROUGH_DOWN;
+                filter.deadline = 0;
+            }
+            break;
+        case NumLockSyncStage::WAIT_KEYPAD:
+            if (keypad_down) {
+                filter.stage = NumLockSyncStage::KEYPAD_ACTIVE;
+                filter.deadline = 0;
+            } else if (num_lock_down) {
+                replay_first_num_lock_tap(filter);
+                queue_num_lock_state(filter, true);
+                filter.stage = NumLockSyncStage::PASSTHROUGH_DOWN;
+                filter.deadline = 0;
+            }
+            break;
+        case NumLockSyncStage::KEYPAD_ACTIVE:
+            if (num_lock_down) {
+                replay_first_num_lock_tap(filter);
+                queue_num_lock_state(filter, true);
+                filter.stage = NumLockSyncStage::PASSTHROUGH_DOWN;
+            } else if (keypad_up) {
+                filter.stage = NumLockSyncStage::WAIT_TRAILING_DOWN;
+                filter.deadline = now + NUM_LOCK_SYNC_EDGE_US;
+            }
+            break;
+        case NumLockSyncStage::WAIT_TRAILING_DOWN:
+            if (num_lock_down) {
+                filter.stage = NumLockSyncStage::TRAILING_DOWN;
+                filter.deadline = now + NUM_LOCK_SYNC_EDGE_US;
+            } else if (keypad_down) {
+                // More than one keypad key may overlap. Keep waiting until the
+                // aggregate keypad state is released again.
+                filter.stage = NumLockSyncStage::KEYPAD_ACTIVE;
+                filter.deadline = 0;
+            }
+            break;
+        case NumLockSyncStage::TRAILING_DOWN:
+            if (num_lock_up) {
+                // Complete NumLock tap / Keypad tap / NumLock tap wrapper:
+                // discard both wrapper taps and leave the keypad event intact.
+                filter.stage = NumLockSyncStage::IDLE;
+                filter.deadline = 0;
+            }
+            break;
+        case NumLockSyncStage::PASSTHROUGH_DOWN:
+            if (num_lock_up) {
+                queue_num_lock_state(filter, false);
+                filter.stage = NumLockSyncStage::IDLE;
+            }
+            break;
+    }
+
+    filter.previous_num_lock = num_lock;
+    filter.previous_keypad = keypad;
+}
+
+static void apply_filtered_num_lock_states(uint64_t now) {
+    for (auto& [interface, filter] : num_lock_sync_filters) {
+        advance_num_lock_sync_timeout(filter, now);
+        if (!filter.pending_output_states.empty()) {
+            filter.output_num_lock = filter.pending_output_states.front();
+            filter.pending_output_states.pop_front();
+            if (monitor_enabled) {
+                monitor_usage(NUM_LOCK_USAGE, filter.output_num_lock, hub_ports[interface >> 8]);
+            }
+        }
+
+        uint32_t interface_bit = 1u << interface_index[interface];
+        uint8_t hub_port = hub_ports[interface >> 8];
+        for (bool raw : { false, true }) {
+            int32_t* state = get_state_ptr(NUM_LOCK_USAGE, 0, false, raw);
+            if (state != NULL) {
+                *state = filter.output_num_lock ? (*state | interface_bit) : (*state & ~interface_bit);
+            }
+            if (hub_port != HUB_PORT_NONE) {
+                state = get_state_ptr(NUM_LOCK_USAGE, hub_port, false, raw);
+                if (state != NULL) {
+                    *state = filter.output_num_lock ? (*state | interface_bit) : (*state & ~interface_bit);
+                }
+            }
+        }
+    }
+}
+
+static void remove_num_lock_sync_filters(uint8_t dev_addr) {
+    for (auto it = num_lock_sync_filters.begin(); it != num_lock_sync_filters.end();) {
+        uint16_t interface = it->first;
+        if ((interface >> 8) != dev_addr) {
+            ++it;
+            continue;
+        }
+
+        uint32_t interface_bit = 1u << interface_index[interface];
+        uint8_t hub_port = hub_ports[dev_addr];
+        for (bool raw : { false, true }) {
+            int32_t* state = get_state_ptr(NUM_LOCK_USAGE, 0, false, raw);
+            if (state != NULL) {
+                *state &= ~interface_bit;
+            }
+            if (hub_port != HUB_PORT_NONE) {
+                state = get_state_ptr(NUM_LOCK_USAGE, hub_port, false, raw);
+                if (state != NULL) {
+                    *state &= ~interface_bit;
+                }
+            }
+        }
+        it = num_lock_sync_filters.erase(it);
+    }
+}
+#endif
 
 inline tap_hold_state_t* get_tap_hold_state_ptr(uint32_t usage, uint8_t hub_port, bool assign_if_absent = false) {
     int32_t* state_ptr = get_state_ptr(usage, hub_port, assign_if_absent);
@@ -715,27 +1009,42 @@ bool differ_on_absolute(const uint8_t* report1, const uint8_t* report2, uint8_t 
     return false;
 }
 
-void aggregate_relative(uint8_t* prev_report, const uint8_t* report, uint8_t report_id) {
+bool aggregate_relative(uint8_t* prev_report, const uint8_t* report, uint8_t report_id) {
+    // Do not let a delayed run of signed relative reports wrap around inside
+    // one HID field (for example, +100 + +100 becoming -56 in an 8-bit axis).
+    // If any field would overflow, keep this report as a separate queue item.
+    for (auto const& [usage, usage_def] : our_usages[report_id]) {
+        if (usage_def.is_relative) {
+            int32_t val1 = get_bits(report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
+            int32_t val2 = get_bits(prev_report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
+            if (usage_def.logical_minimum < 0) {
+                val1 = sign_extend_hid_value(val1, usage_def.size);
+                val2 = sign_extend_hid_value(val2, usage_def.size);
+            }
+            int64_t sum = (int64_t) val1 + val2;
+            if ((sum < usage_def.logical_minimum) || (sum > usage_def.logical_maximum)) {
+                return false;
+            }
+        }
+    }
+
     for (auto const& [usage, usage_def] : our_usages[report_id]) {
         if (usage_def.is_relative) {
             int32_t val1 = get_bits(report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
             if (usage_def.logical_minimum < 0) {
-                if (val1 & (1 << (usage_def.size - 1))) {
-                    val1 |= 0xFFFFFFFF << usage_def.size;
-                }
+                val1 = sign_extend_hid_value(val1, usage_def.size);
             }
             if (val1) {
                 int32_t val2 = get_bits(prev_report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
                 if (usage_def.logical_minimum < 0) {
-                    if (val2 & (1 << (usage_def.size - 1))) {
-                        val2 |= 0xFFFFFFFF << usage_def.size;
-                    }
+                    val2 = sign_extend_hid_value(val2, usage_def.size);
                 }
 
                 put_bits(prev_report, report_sizes[report_id], usage_def.bitpos, usage_def.size, val1 + val2);
             }
         }
     }
+    return true;
 }
 
 static uint8_t dpad_table[16] = { 8, 6, 2, 8, 0, 7, 1, 0, 4, 5, 3, 4, 8, 6, 2, 8 };
@@ -1093,6 +1402,9 @@ void process_mapping(bool auto_repeat) {
     }
 
     uint64_t now = get_time();
+#ifdef WBT2_BOOT_INTERFACES
+    apply_filtered_num_lock_states(now);
+#endif
     frame_counter++;
 
     for (auto& tap_hold : tap_hold_usages) {
@@ -1210,11 +1522,19 @@ void process_mapping(bool auto_repeat) {
     digipot_state[5] = 0;
     dpad_state = 0;
 
+#ifdef HID_HOST_DIAGNOSTICS
+    bool diagnostic_input_frame[2] = {};
+#endif
     for (auto& rev_map : reverse_mapping) {
         uint32_t target = rev_map.target;
         bool register_target = (target & 0xFFFF0000) == REGISTER_USAGE_PAGE;
         if (rev_map.is_relative) {
             for (auto& map_source : rev_map.sources) {
+#ifdef HID_HOST_DIAGNOSTICS
+                if (diagnostic_cursor_usage(target) && (*map_source.input_state != 0)) {
+                    diagnostic_input_frame[target & 1] = true;
+                }
+#endif
                 if ((map_source.orig_source_port != 0) &&
                     !(active_ports_mask & (1 << map_source.orig_source_port))) {
                     continue;
@@ -1238,6 +1558,11 @@ void process_mapping(bool auto_repeat) {
                     }
                 }
                 if (value != 0) {
+#ifdef HID_HOST_DIAGNOSTICS
+                    if (diagnostic_cursor_usage(target)) {
+                        hid_host_output_counters[2 + (target & 1)]++;
+                    }
+#endif
                     if (target == V_SCROLL_USAGE || target == H_SCROLL_USAGE) {
                         accumulated[target] += handle_scroll(map_source, target, value * RESOLUTION_MULTIPLIER, now);
                     } else {
@@ -1320,6 +1645,12 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+#ifdef HID_HOST_DIAGNOSTICS
+    for (uint8_t axis = 0; axis < 2; axis++) {
+        hid_host_output_counters[axis] += diagnostic_input_frame[axis];
+    }
+#endif
+
     // execute queued macros
     if (!macro_queue.empty()) {
         for (uint32_t usage : macro_queue.front().items) {
@@ -1380,9 +1711,7 @@ void process_mapping(bool auto_repeat) {
         // XXX I don't think this is necessary now that we only do process_mapping once per frame (existing_val is always zero)
         int32_t existing_val = get_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size);
         if (our_usage.logical_minimum < 0) {
-            if (existing_val & (1 << (our_usage.size - 1))) {
-                existing_val |= 0xFFFFFFFF << our_usage.size;
-            }
+            existing_val = sign_extend_hid_value(existing_val, our_usage.size);
         }
         int32_t truncated = accumulated_val / 1000;
         accumulated_val -= truncated * 1000;
@@ -1396,6 +1725,10 @@ void process_mapping(bool auto_repeat) {
         if (our_descriptor->sanitize_report != nullptr) {
             our_descriptor->sanitize_report(report_id, reports[report_id], report_sizes[report_id]);
         }
+#ifdef HID_HOST_DIAGNOSTICS
+        bool diagnostic_motion = diagnostic_report_has_motion(report_id, reports[report_id]);
+        hid_host_output_counters[4] += diagnostic_motion;
+#endif
         if (needs_to_be_sent(report_id)) {
             if (or_items == OR_BUFSIZE) {
                 printf("overflow!\n");
@@ -1404,8 +1737,8 @@ void process_mapping(bool auto_repeat) {
             uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
             if ((or_items > 0) &&
                 (outgoing_reports[prev][0] == report_id) &&
-                !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
-                aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
+                !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id) &&
+                aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
             } else {
                 outgoing_reports[or_tail][0] = report_id;
                 memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
@@ -1413,6 +1746,9 @@ void process_mapping(bool auto_repeat) {
                 or_tail = (or_tail + 1) % OR_BUFSIZE;
                 or_items++;
             }
+#ifdef HID_HOST_DIAGNOSTICS
+            hid_host_output_counters[5] += diagnostic_motion;
+#endif
         }
         if (our_descriptor->clear_report != nullptr) {
             our_descriptor->clear_report(reports[report_id], report_id, report_sizes[report_id]);
@@ -1459,6 +1795,9 @@ bool send_report(send_report_t do_send_report) {
     // Keep the report queued while the interrupt endpoint is busy. Relative
     // mouse data would otherwise be discarded before TinyUSB transmits it.
     if (sent) {
+#ifdef HID_HOST_DIAGNOSTICS
+        hid_host_output_counters[6] += diagnostic_report_has_motion(report_id, outgoing_reports[or_head] + 1);
+#endif
         or_head = (or_head + 1) % OR_BUFSIZE;
         or_items--;
         reports_sent++;
@@ -1487,7 +1826,151 @@ bool send_monitor_report(send_report_t do_send_report) {
     return sent;
 }
 
+#ifdef HID_HOST_DIAGNOSTICS
+void queue_hid_host_diagnostic(const uint8_t* data, uint16_t len) {
+    if ((len != sizeof(hid_host_diagnostic_t)) ||
+        (hid_host_diagnostic_items == HID_HOST_DIAGNOSTIC_QUEUE_SIZE)) {
+        return;
+    }
+
+    memcpy(&hid_host_diagnostics[hid_host_diagnostic_tail], data, sizeof(hid_host_diagnostic_t));
+    hid_host_diagnostic_tail = (hid_host_diagnostic_tail + 1) % HID_HOST_DIAGNOSTIC_QUEUE_SIZE;
+    hid_host_diagnostic_items++;
+}
+
+bool send_hid_host_diagnostic_report(send_report_t do_send_report, uint8_t interface) {
+    if (suspended) {
+        return false;
+    }
+
+    // Send from A even if B has not produced an event. This distinguishes a
+    // missing WebHID inputreport path from an idle B-side USB host.
+    uint64_t now = get_time();
+    if ((next_hid_host_diagnostic_heartbeat == 0) || (now >= next_hid_host_diagnostic_heartbeat)) {
+        hid_host_diagnostic_t heartbeat = {};
+        heartbeat.event = HidHostDiagnosticEvent::HEARTBEAT;
+        uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+        memcpy(report + 6, &heartbeat, sizeof(heartbeat));
+        if (!do_send_report(interface, report, sizeof(report))) {
+            return false;
+        }
+
+        next_hid_host_diagnostic_heartbeat = now + HID_HOST_DIAGNOSTIC_HEARTBEAT_US;
+        hid_host_diagnostic_counter_snapshot_pending = true;
+        hid_host_hcd_snapshot_pending = true;
+        hid_host_diagnostic_transport_snapshot_pending = true;
+        hid_host_pipeline_snapshot_cursor = 0;
+        return true;
+    }
+
+    // The latest B-side HCD state follows every heartbeat.  Keep it ahead of
+    // ordinary event traffic so before/after insertion captures are bounded.
+    if (hid_host_hcd_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        if (!make_hid_host_hcd_snapshot(&snapshot)) {
+            hid_host_hcd_snapshot_pending = false;
+        } else {
+            uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+            memcpy(report + 6, &snapshot, sizeof(snapshot));
+            if (!do_send_report(interface, report, sizeof(report))) {
+                return false;
+            }
+            hid_host_hcd_snapshot_pending = false;
+            return true;
+        }
+    }
+
+    // This latest B-side heartbeat is kept out of the ordinary event FIFO so
+    // WebHID can distinguish a missing B producer from a diagnostic UART stall.
+    if (hid_host_diagnostic_transport_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        if (!make_hid_host_diagnostic_transport_snapshot(&snapshot)) {
+            hid_host_diagnostic_transport_snapshot_pending = false;
+        } else {
+            uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+            memcpy(report + 6, &snapshot, sizeof(snapshot));
+            if (!do_send_report(interface, report, sizeof(report))) {
+                return false;
+            }
+            hid_host_diagnostic_transport_snapshot_pending = false;
+            return true;
+        }
+    }
+
+    // Heartbeats remain the liveness priority.  Send one counter snapshot on
+    // the next ready interval rather than relying on the ordinary FIFO, whose
+    // diagnostic-only records may be delayed by descriptor/event traffic.
+    if (hid_host_diagnostic_counter_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        if (!make_hid_host_diagnostic_counter_snapshot(&snapshot)) {
+            hid_host_diagnostic_counter_snapshot_pending = false;
+        } else {
+            uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+            memcpy(report + 6, &snapshot, sizeof(snapshot));
+            if (!do_send_report(interface, report, sizeof(report))) {
+                return false;
+            }
+            hid_host_diagnostic_counter_snapshot_pending = false;
+            return true;
+        }
+    }
+
+    // Send every observed physical port and the merged output once per
+    // heartbeat. Advance only on USB acceptance; the ordinary FIFO can drop
+    // samples, but cannot starve these cumulative pipeline counters.
+    while (hid_host_pipeline_snapshot_cursor <= HID_HOST_DIAGNOSTIC_PORTS) {
+        uint8_t slot = hid_host_pipeline_snapshot_cursor;
+        if ((slot < HID_HOST_DIAGNOSTIC_PORTS) && !hid_host_usage_seen[slot]) {
+            hid_host_pipeline_snapshot_cursor++;
+            continue;
+        }
+        hid_host_diagnostic_t snapshot = {};
+        if (slot == HID_HOST_DIAGNOSTIC_PORTS) {
+            make_hid_host_pipeline_snapshot(snapshot, HidHostDiagnosticEvent::OUTPUT_COUNTERS,
+                                           0, hid_host_output_counters);
+        } else {
+            make_hid_host_pipeline_snapshot(snapshot, HidHostDiagnosticEvent::USAGE_COUNTERS,
+                                           slot == 16 ? 255 : slot, hid_host_usage_counters[slot]);
+        }
+        uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+        memcpy(report + 6, &snapshot, sizeof(snapshot));
+        if (!do_send_report(interface, report, sizeof(report))) {
+            return false;
+        }
+        hid_host_pipeline_snapshot_cursor++;
+        return true;
+    }
+
+    if (hid_host_diagnostic_items == 0) {
+        return false;
+    }
+
+    uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+    memcpy(report + 6, &hid_host_diagnostics[hid_host_diagnostic_head], sizeof(hid_host_diagnostic_t));
+    if (!do_send_report(interface, report, sizeof(report))) {
+        return false;
+    }
+
+    hid_host_diagnostic_head = (hid_host_diagnostic_head + 1) % HID_HOST_DIAGNOSTIC_QUEUE_SIZE;
+    hid_host_diagnostic_items--;
+    return true;
+}
+#endif
+
 void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port) {
+    // Cursor X/Y are relative values. Coalesce repeat values from a single
+    // hub before checking capacity so a continuously moving device cannot
+    // fill the seven-item Monitor packet and hide another mouse's movement.
+    // Buttons and absolute usages retain their existing event-by-event form.
+    if ((usage == 0x00010030) || (usage == 0x00010031)) {
+        for (uint8_t i = 0; i < monitor_usages_queued; i++) {
+            monitor_report_item_t& item = monitor_report[monitor_report_idx].items[i];
+            if ((item.usage == usage) && (item.hub_port == hub_port)) {
+                item.value += value;
+                return;
+            }
+        }
+    }
     if (monitor_usages_queued == sizeof(monitor_report[0].items) / sizeof(monitor_report[0].items[0])) {
         return;
     }
@@ -1498,7 +1981,16 @@ void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port) {
     };
 }
 
-inline void read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx) {
+inline void monitor_parsed_usage(uint16_t interface, uint32_t usage, int32_t value, uint8_t hub_port) {
+    monitor_usage(usage, value, hub_port);
+#ifdef HID_HOST_DIAGNOSTICS
+    // Keep this immediately after monitor_usage(): it distinguishes a report
+    // that was parsed on A from one only observed at the UART transport edge.
+    queue_hid_host_parsed_usage(interface, usage, value, hub_port);
+#endif
+}
+
+inline void read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx, uint8_t hub_port) {
     int32_t value = 0;
     if (their_usage.is_array) {
         for (unsigned int i = 0; i < their_usage.count; i++) {
@@ -1512,18 +2004,28 @@ inline void read_input(const uint8_t* report, int len, uint32_t source_usage, co
     } else {
         value = get_bits(report, len, their_usage.bitpos, their_usage.size);
         if ((their_usage.logical_minimum < 0) || (their_usage.logical_maximum < 0)) {
-            if (value & (1 << (their_usage.size - 1))) {
-                value |= 0xFFFFFFFF << their_usage.size;
-            }
+            value = sign_extend_hid_value(value, their_usage.size);
         }
     }
 
+#ifdef HID_HOST_DIAGNOSTICS
+    if (diagnostic_cursor_usage(source_usage)) {
+        // Includes zero-valued reports and raw/scaled routes if both were
+        // requested. This counts actual read_input calls, not transport
+        // packets or only nonzero deltas.
+        hid_host_usage_counters[diagnostic_port_index(hub_port)][2 + (source_usage & 1)]++;
+    }
+#endif
     if (their_usage.is_relative) {
         if (their_usage.input_state_0 != NULL) {
             *(their_usage.input_state_0) += value;
         }
         if (their_usage.input_state_n != NULL) {
-            *(their_usage.input_state_n) = value;  // XXX does it need to be += ?
+            // More than one HID interface can contribute to the same mapped
+            // hub port before the next mapping frame.  Preserve every
+            // relative delta (mouse X/Y and wheels) just like the unfiltered
+            // port-0 state above instead of letting the last report win.
+            *(their_usage.input_state_n) += value;
         }
     } else {
         int32_t scaled_value;
@@ -1535,16 +2037,29 @@ inline void read_input(const uint8_t* report, int len, uint32_t source_usage, co
         if (their_usage.input_state_0 != NULL) {
             if ((their_usage.size == 1) || their_usage.is_array) {
                 if (value) {
-                    *(their_usage.input_state_0) |= 1 << interface_idx;
+                    *(their_usage.input_state_0) |= 1u << interface_idx;
                 } else {
-                    *(their_usage.input_state_0) &= ~(1 << interface_idx);
+                    *(their_usage.input_state_0) &= ~(1u << interface_idx);
                 }
             } else {
                 *(their_usage.input_state_0) = scaled_value;
             }
         }
         if (their_usage.input_state_n != NULL) {
-            *(their_usage.input_state_n) = scaled_value;
+            // A receiver can expose multiple mouse collections/interfaces on
+            // one physical hub port.  Keep their binary states independent so
+            // a release from one interface cannot clear a button still held
+            // by another.  Non-binary absolute controls retain their existing
+            // last-value semantics.
+            if ((their_usage.size == 1) || their_usage.is_array) {
+                if (value) {
+                    *(their_usage.input_state_n) |= 1u << interface_idx;
+                } else {
+                    *(their_usage.input_state_n) &= ~(1u << interface_idx);
+                }
+            } else {
+                *(their_usage.input_state_n) = scaled_value;
+            }
         }
     }
 }
@@ -1571,7 +2086,7 @@ inline void read_input_range(const uint8_t* report, int len, uint32_t source_usa
     }
 }
 
-inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx, uint8_t hub_port) {
+inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint16_t interface, uint8_t interface_idx, uint8_t hub_port) {
     int32_t value = 0;
     if (their_usage.is_array) {
         for (unsigned int i = 0; i < their_usage.count; i++) {
@@ -1585,20 +2100,18 @@ inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_u
     } else {
         value = get_bits(report, len, their_usage.bitpos, their_usage.size);
         if ((their_usage.logical_minimum < 0) || (their_usage.logical_maximum < 0)) {
-            if (value & (1 << (their_usage.size - 1))) {
-                value |= 0xFFFFFFFF << their_usage.size;
-            }
+            value = sign_extend_hid_value(value, their_usage.size);
         }
     }
 
     if (their_usage.is_relative) {
         if (value != 0) {
-            monitor_usage(source_usage, value, hub_port);
+            monitor_parsed_usage(interface, source_usage, value, hub_port);
         }
     } else {
         if ((their_usage.size == 1) || their_usage.is_array) {
             if (value != (1 & (monitor_input_state[source_usage] >> interface_idx))) {
-                monitor_usage(source_usage, value, hub_port);
+                monitor_parsed_usage(interface, source_usage, value, hub_port);
             }
             if (value) {
                 monitor_input_state[source_usage] |= 1 << interface_idx;
@@ -1607,7 +2120,7 @@ inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_u
             }
         } else {
             if (value != monitor_input_state[source_usage]) {
-                monitor_usage(source_usage, value, hub_port);
+                monitor_parsed_usage(interface, source_usage, value, hub_port);
             }
             monitor_input_state[source_usage] = value;
         }
@@ -1635,6 +2148,134 @@ void handle_received_report(const uint8_t* report, int len, uint16_t interface, 
         our_descriptor->handle_received_report(report, len, interface, external_report_id);
     }
 }
+
+#ifdef WBT2_BOOT_INTERFACES
+static bool report_defines_usage(
+    const std::unordered_map<uint32_t, usage_def_t>& usage_map, uint32_t target_usage) {
+    for (auto const& [usage, usage_def] : usage_map) {
+        if ((usage == target_usage) ||
+            ((usage_def.usage_maximum != 0) &&
+             (target_usage >= usage) &&
+             (target_usage <= usage_def.usage_maximum))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool report_usage_active(
+    const uint8_t* report,
+    int len,
+    const std::unordered_map<uint32_t, usage_def_t>& usage_map,
+    uint32_t target_usage) {
+    for (auto const& [usage, usage_def] : usage_map) {
+        if ((usage_def.usage_maximum != 0) &&
+            (target_usage >= usage) &&
+            (target_usage <= usage_def.usage_maximum)) {
+            uint32_t target_index = usage_def.logical_minimum + target_usage - usage;
+            for (uint32_t i = 0; i < usage_def.count; i++) {
+                if (get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size) == target_index) {
+                    return true;
+                }
+            }
+        } else if (usage == target_usage) {
+            if (!usage_def.is_array) {
+                return get_bits(report, len, usage_def.bitpos, usage_def.size) != 0;
+            }
+            for (uint32_t i = 0; i < usage_def.count; i++) {
+                uint32_t value = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+                if (((usage_def.index_mask == 0) && (value == usage_def.index)) ||
+                    (usage_def.index_mask & (1 << value))) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static void clear_report_usage(
+    uint8_t* report,
+    int len,
+    const std::unordered_map<uint32_t, usage_def_t>& usage_map,
+    uint32_t target_usage) {
+    for (auto const& [usage, usage_def] : usage_map) {
+        if ((usage_def.usage_maximum != 0) &&
+            (target_usage >= usage) &&
+            (target_usage <= usage_def.usage_maximum)) {
+            uint32_t target_index = usage_def.logical_minimum + target_usage - usage;
+            for (uint32_t i = 0; i < usage_def.count; i++) {
+                uint16_t bitpos = usage_def.bitpos + i * usage_def.size;
+                if (get_bits(report, len, bitpos, usage_def.size) == target_index) {
+                    put_bits(report, len, bitpos, usage_def.size, 0);
+                }
+            }
+        } else if ((usage == target_usage) && !usage_def.is_array) {
+            put_bits(report, len, usage_def.bitpos, usage_def.size, 0);
+        } else if ((usage == target_usage) && usage_def.is_array) {
+            for (uint32_t i = 0; i < usage_def.count; i++) {
+                uint16_t bitpos = usage_def.bitpos + i * usage_def.size;
+                uint32_t value = get_bits(report, len, bitpos, usage_def.size);
+                if (((usage_def.index_mask == 0) && (value == usage_def.index)) ||
+                    (usage_def.index_mask & (1 << value))) {
+                    put_bits(report, len, bitpos, usage_def.size, 0);
+                }
+            }
+        }
+    }
+}
+
+static const uint8_t* filter_num_lock_sync_report(
+    const uint8_t* report,
+    int len,
+    uint16_t interface,
+    uint8_t report_id,
+    uint8_t* filtered_report) {
+    auto usage_map_search = their_usages[interface].find(report_id);
+    if ((usage_map_search == their_usages[interface].end()) || (len > MAX_REPORT_SIZE)) {
+        return report;
+    }
+    auto const& usage_map = usage_map_search->second;
+
+    bool defines_num_lock = report_defines_usage(usage_map, NUM_LOCK_USAGE);
+    bool defines_keypad = false;
+    bool keypad = false;
+    for (uint32_t usage = 0x00070054; usage <= 0x00070063; usage++) {
+        if (report_defines_usage(usage_map, usage)) {
+            defines_keypad = true;
+            keypad |= report_usage_active(report, len, usage_map, usage);
+        }
+    }
+    if (!defines_num_lock && !defines_keypad) {
+        return report;
+    }
+
+    auto& filter = num_lock_sync_filters[interface];
+    if (defines_num_lock) {
+        filter.num_lock_by_report[report_id] = report_usage_active(report, len, usage_map, NUM_LOCK_USAGE);
+    }
+    if (defines_keypad) {
+        filter.keypad_by_report[report_id] = keypad;
+    }
+
+    bool num_lock = false;
+    for (auto const& [id, state] : filter.num_lock_by_report) {
+        num_lock |= state;
+    }
+    keypad = false;
+    for (auto const& [id, state] : filter.keypad_by_report) {
+        keypad |= state;
+    }
+    observe_num_lock_sync_state(filter, num_lock, keypad, get_time());
+
+    if (!defines_num_lock) {
+        return report;
+    }
+    memcpy(filtered_report, report, len);
+    clear_report_usage(filtered_report, len, usage_map, NUM_LOCK_USAGE);
+    return filtered_report;
+}
+#endif
 
 static inline bool is_rollover(const uint8_t* report, int len, uint16_t interface, uint8_t report_id) {
     for (auto const& usage_def : rollover_usages[interface][report_id]) {
@@ -1674,8 +2315,33 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
         }
     }
 
+#ifdef WBT2_BOOT_INTERFACES
+    uint8_t filtered_report[MAX_REPORT_SIZE];
+    report = filter_num_lock_sync_report(report, len, interface, report_id, filtered_report);
+#endif
+
     uint8_t interface_idx = interface_index[interface];
     uint8_t hub_port = hub_ports[interface >> 8];
+#ifdef HID_HOST_DIAGNOSTICS
+    uint8_t diagnostic_port = diagnostic_port_index(hub_port);
+    hid_host_usage_seen[diagnostic_port] = true;
+    hid_host_usage_counters[diagnostic_port][6]++;
+    // Decode all descriptor-defined X/Y fields, independently of whether
+    // mappings allocated an input-state slot and whether Monitor is enabled.
+    for (auto const& [usage, def] : their_usages[interface][report_id]) {
+        if (!diagnostic_cursor_usage(usage) || def.is_array || (def.usage_maximum != 0)) {
+            continue;
+        }
+        int32_t value = get_bits(report, len, def.bitpos, def.size);
+        if ((def.logical_minimum < 0) || (def.logical_maximum < 0)) {
+            value = sign_extend_hid_value(value, def.size);
+        }
+        if (value != 0) {
+            hid_host_usage_counters[diagnostic_port][usage & 1]++;
+            hid_host_usage_counters[diagnostic_port][4 + (usage & 1)] = (uint32_t) value;
+        }
+    }
+#endif
     if (hub_port != HUB_PORT_NONE) {
         active_ports_mask |= 1 << hub_port;
     }
@@ -1687,7 +2353,7 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
 
         for (auto const& their : their_used_usages[interface][report_id]) {
             if (their.usage_def.usage_maximum == 0) {
-                read_input(report, len, their.usage, their.usage_def, interface_idx);
+                read_input(report, len, their.usage, their.usage_def, interface_idx, hub_port);
             } else {
                 read_input_range(report, len, their.usage, their.usage_def, interface_idx, hub_port);
             }
@@ -1697,7 +2363,7 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
     if (monitor_enabled) {
         for (auto const& [their_usage, their_usage_def] : their_usages[interface][report_id]) {
             if (their_usage_def.usage_maximum == 0) {
-                monitor_read_input(report, len, their_usage, their_usage_def, interface_idx, hub_port);
+                monitor_read_input(report, len, their_usage, their_usage_def, interface, interface_idx, hub_port);
             } else {
                 monitor_read_input_range(report, len, their_usage, their_usage_def, interface_idx, hub_port);
             }
@@ -2072,6 +2738,9 @@ void device_disconnected_callback(uint8_t dev_addr) {
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
+#ifdef WBT2_BOOT_INTERFACES
+    remove_num_lock_sync_filters(dev_addr);
+#endif
     clear_descriptor_data(dev_addr);
     uint8_t hub_port = hub_ports[dev_addr];
     if ((hub_port != 0) && (hub_port != HUB_PORT_NONE)) {

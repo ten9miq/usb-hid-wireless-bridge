@@ -23,6 +23,11 @@ add_compile_options(-Wall)
 
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 
+# Emit B-side USB host enumeration diagnostics over the A-side vendor HID
+# configuration interface.  Disabled by default so release firmware and its
+# descriptor remain unchanged.
+option(HID_HOST_DIAGNOSTICS "Enable dual A/B USB host diagnostic reports" OFF)
+
 if((PICO_BOARD STREQUAL "pico") OR (PICO_BOARD STREQUAL "pico2"))
 add_compile_definitions(GPIO_VALID_PINS_BASE=0b00011100011111111111111111111111)
 endif()
@@ -109,6 +114,9 @@ add_executable(remapper_dual_a
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:src/mcp4651.cc>
 )
 target_compile_definitions(remapper_dual_a PRIVATE WBT2_BOOT_INTERFACES=1)
+if(HID_HOST_DIAGNOSTICS)
+    target_compile_definitions(remapper_dual_a PRIVATE HID_HOST_DIAGNOSTICS=1)
+endif()
 target_include_directories(remapper_dual_a PRIVATE
     src
     src/tusb_config_device
@@ -140,6 +148,12 @@ target_include_directories(remapper_dual_b PRIVATE
     src
     src/tusb_config_host
 )
+if(HID_HOST_DIAGNOSTICS)
+    target_compile_definitions(remapper_dual_b PRIVATE HID_HOST_DIAGNOSTICS=1)
+    # The pre-mount evidence is emitted from TinyUSB host internals, so the
+    # host library must receive the diagnostic-only definition as well.
+    target_compile_definitions(tinyusb_host INTERFACE HID_HOST_DIAGNOSTICS=1)
+endif()
 target_link_libraries(remapper_dual_b
     pico_stdlib
     tinyusb_host
@@ -206,7 +220,7 @@ pico_set_binary_type(flash_b_side no_flash)
 add_custom_command(
     OUTPUT remapper_dual_combined.uf2
     DEPENDS remapper_dual_a flash_b_side
-    COMMAND ${CMAKE_CURRENT_LIST_DIR}/combine_uf2.py remapper_dual_a.uf2 flash_b_side.uf2 remapper_dual_combined.uf2
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/combine_uf2.py remapper_dual_a.uf2 flash_b_side.uf2 remapper_dual_combined.uf2
     VERBATIM
 )
 

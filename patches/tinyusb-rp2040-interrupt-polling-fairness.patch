@@ -1,0 +1,231 @@
+diff --git a/src/portable/raspberrypi/rp2040/hcd_rp2040.c b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+--- a/src/portable/raspberrypi/rp2040/hcd_rp2040.c
++++ b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+@@ -66,10 +66,91 @@ static struct hw_endpoint ep_pool[1 + PICO_USB_HOST_INTERRUPT_ENDPOINTS];
+ // a simultaneous EPX transaction and stall enumeration of another device.
+ static uint32_t saved_int_ep_ctrl;
+ static bool int_ep_suppressed;
++// The hardware can poll only one asynchronous endpoint at a time.  Slot zero
++// means that none is selected; the cursor is the first slot considered at the
++// next SOF.
++static uint8_t int_ep_selected;
++static uint8_t int_ep_rr_cursor;
+ #ifdef HID_HOST_DIAGNOSTICS
+ static uint32_t diagnostic_control_timeout_count;
+ #endif
+ 
++static bool int_ep_eligible(uint8_t slot)
++{
++  return slot > 0 && slot < TU_ARRAY_SIZE(ep_pool) &&
++         ep_pool[slot].configured && ep_pool[slot].active;
++}
++
++static void int_ep_program_selected(void)
++{
++  uint32_t mask = 0;
++
++  if (!int_ep_eligible(int_ep_selected))
++  {
++    int_ep_selected = 0;
++  }
++
++  if (int_ep_selected)
++  {
++    struct hw_endpoint const *ep = &ep_pool[int_ep_selected];
++    mask = 1u << (ep->interrupt_num + 1u);
++  }
++
++  // Do not use the atomic set/clear aliases here: this register must always
++  // contain either no slot or exactly one live asynchronous endpoint.
++  usb_hw->int_ep_ctrl = int_ep_suppressed ? 0 : mask;
++}
++
++static void int_ep_select_next(void)
++{
++  uint8_t slot = int_ep_rr_cursor;
++
++  int_ep_selected = 0;
++  for (uint i = 0; i < PICO_USB_HOST_INTERRUPT_ENDPOINTS; i++)
++  {
++    if (slot >= TU_ARRAY_SIZE(ep_pool)) slot = 1;
++    if (int_ep_eligible(slot))
++    {
++      int_ep_selected = slot;
++      slot++;
++      break;
++    }
++    slot++;
++  }
++
++  if (slot >= TU_ARRAY_SIZE(ep_pool)) slot = 1;
++  int_ep_rr_cursor = slot;
++  int_ep_program_selected();
++}
++
++static void int_ep_ensure_selected(void)
++{
++  if (int_ep_eligible(int_ep_selected))
++  {
++    int_ep_program_selected();
++  }
++  else
++  {
++    int_ep_select_next();
++  }
++}
++
++static void int_ep_deschedule(struct hw_endpoint *ep, bool sof_pending)
++{
++  uint8_t const slot = (uint8_t) (ep - ep_pool);
++  if (int_ep_selected != slot) return;
++
++  int_ep_selected = 0;
++  int_ep_program_selected();
++
++  // A simultaneous SOF owns the next rotation.  Otherwise keep the hardware
++  // busy by choosing the next live endpoint immediately.
++  if (!sof_pending)
++  {
++    int_ep_ensure_selected();
++  }
++}
++
+ static void suppress_int_polling(void)
+ {
+   if (!int_ep_suppressed)
+@@ -86,8 +167,10 @@ static void __tusb_irq_path_func(restore_int_polling)(void)
+ {
+   if (int_ep_suppressed && !epx.active)
+   {
+-    usb_hw->int_ep_ctrl = saved_int_ep_ctrl;
+     int_ep_suppressed = false;
++    // The saved register is diagnostic state only.  A transfer may have
++    // completed or an endpoint may have closed while EPX was active.
++    int_ep_ensure_selected();
+   }
+ }
+ 
+@@ -133,19 +216,22 @@ static void __tusb_irq_path_func(hw_xfer_complete)(struct hw_endpoint *ep, xfer_
+   hcd_event_xfer_complete(dev_addr, ep_addr, xferred_len, xfer_result, true);
+ }
+ 
+-static void __tusb_irq_path_func(_handle_buff_status_bit)(uint bit, struct hw_endpoint *ep)
++static bool __tusb_irq_path_func(_handle_buff_status_bit)(uint bit, struct hw_endpoint *ep)
+ {
+   usb_hw_clear->buf_status = bit;
+-  // EP may have been stalled?
+-  assert(ep->active);
++  // A close can race a latched asynchronous completion.  Acknowledge that
++  // stale status without touching a transfer that has already been reset.
++  if (!ep->active) return false;
++
+   bool done = hw_endpoint_xfer_continue(ep);
+   if ( done )
+   {
+     hw_xfer_complete(ep, XFER_RESULT_SUCCESS);
+   }
++  return done;
+ }
+ 
+-static void __tusb_irq_path_func(hw_handle_buff_status)(void)
++static void __tusb_irq_path_func(hw_handle_buff_status)(bool sof_pending)
+ {
+   uint32_t remaining_buffers = usb_hw->buf_status;
+   pico_trace("buf_status 0x%08lx\n", remaining_buffers);
+@@ -188,7 +274,11 @@ static void __tusb_irq_path_func(hw_handle_buff_status)(void)
+       if ( remaining_buffers & bit )
+       {
+         remaining_buffers &= ~bit;
+-        _handle_buff_status_bit(bit, &ep_pool[i]);
++        struct hw_endpoint *ep = &ep_pool[i];
++        if (_handle_buff_status_bit(bit, ep))
++        {
++          int_ep_deschedule(ep, sof_pending);
++        }
+       }
+     }
+   }
+@@ -259,7 +349,7 @@ static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
+   {
+     handled |= USB_INTS_BUFF_STATUS_BITS;
+     TU_LOG(2, "Buffer complete\r\n");
+-    hw_handle_buff_status();
++    hw_handle_buff_status(status & USB_INTS_HOST_SOF_BITS);
+   }
+ 
+   if ( status & USB_INTS_TRANS_COMPLETE_BITS )
+@@ -292,6 +382,13 @@ static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
+   {
+     handled |= USB_INTE_HOST_SOF_BITS;
+     usb_hw->sof_rd; // HOST_SOF interrupt is cleared by reading SOF_RD
++    // Keep the current choice while EPX owns the shared handshake latches.
++    // Otherwise rotate even after a NAK, so a permanently NAKing endpoint
++    // cannot starve another active endpoint.
++    if (!int_ep_suppressed)
++    {
++      int_ep_select_next();
++    }
+     if (tuh_sof_cb) {
+       hcd_event_t event;
+       event.rhport              = RHPORT_NATIVE;
+@@ -423,9 +516,6 @@ static void _hw_endpoint_init(struct hw_endpoint *ep, uint8_t dev_addr, uint8_t
+     }
+     usb_hw->int_ep_addr_ctrl[ep->interrupt_num] = reg;
+ 
+-    // Finally, enable interrupt that endpoint
+-    usb_hw_set->int_ep_ctrl = 1 << (ep->interrupt_num + 1);
+-
+     // If it's an interrupt endpoint we need to set up the buffer control
+     // register
+   }
+@@ -455,6 +545,8 @@ bool hcd_init(uint8_t rhport)
+   memset(&ep_pool, 0, sizeof(ep_pool));
+   saved_int_ep_ctrl = 0;
+   int_ep_suppressed = false;
++  int_ep_selected = 0;
++  int_ep_rr_cursor = 1;
+ #ifdef HID_HOST_DIAGNOSTICS
+   diagnostic_control_timeout_count = 0;
+ #endif
+@@ -531,14 +623,14 @@ void hcd_device_close(uint8_t rhport, uint8_t dev_addr)
+ 
+   if (dev_addr == 0) return;
+ 
++  uint32_t const irq_state = save_and_disable_interrupts();
++
+   for (size_t i = 1; i < TU_ARRAY_SIZE(ep_pool); i++)
+   {
+     hw_endpoint_t* ep = &ep_pool[i];
+ 
+     if (ep->dev_addr == dev_addr && ep->configured)
+     {
+-      // in case it is an interrupt endpoint, disable it
+-      usb_hw_clear->int_ep_ctrl = (1 << (ep->interrupt_num + 1));
+       usb_hw->int_ep_addr_ctrl[ep->interrupt_num] = 0;
+ 
+       // unconfigure the endpoint
+@@ -548,6 +640,11 @@ void hcd_device_close(uint8_t rhport, uint8_t dev_addr)
+       hw_endpoint_reset_transfer(ep);
+     }
+   }
++
++  // Removing the selected slot must never leave it armed.  Preserve a live
++  // selected slot, otherwise choose the next eligible one.
++  int_ep_ensure_selected();
++  restore_interrupts(irq_state);
+ }
+ 
+ uint32_t hcd_frame_number(uint8_t rhport)
+@@ -703,7 +800,12 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t *
+     restore_interrupts(irq_state);
+   }else
+   {
++    uint32_t const irq_state = save_and_disable_interrupts();
+     hw_endpoint_xfer_start(ep, buffer, buflen);
++    // Do not steal an already selected endpoint; arm this one immediately
++    // only when no other live selection exists.
++    int_ep_ensure_selected();
++    restore_interrupts(irq_state);
+   }
+ 
+   return true;

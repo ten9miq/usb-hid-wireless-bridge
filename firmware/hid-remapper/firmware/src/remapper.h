@@ -36,6 +36,14 @@ void queue_set_feature_report(uint16_t interface, uint8_t report_id, const uint8
 void queue_get_feature_report(uint16_t interface, uint8_t report_id, uint8_t len);
 void send_out_report();
 bool send_monitor_report(send_report_t do_send_report);
+#ifdef HID_HOST_DIAGNOSTICS
+#include "hid_host_diagnostics.h"
+void queue_hid_host_diagnostic(const uint8_t* data, uint16_t len);
+bool make_hid_host_diagnostic_counter_snapshot(hid_host_diagnostic_t* snapshot);
+bool make_hid_host_hcd_snapshot(hid_host_diagnostic_t* snapshot);
+bool make_hid_host_diagnostic_transport_snapshot(hid_host_diagnostic_t* snapshot);
+bool send_hid_host_diagnostic_report(send_report_t do_send_report, uint8_t interface);
+#endif
 void print_stats();
 void reset_state();
 

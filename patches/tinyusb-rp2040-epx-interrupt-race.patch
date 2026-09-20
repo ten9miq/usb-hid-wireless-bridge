@@ -1,0 +1,110 @@
+diff --git a/src/portable/raspberrypi/rp2040/hcd_rp2040.c b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+--- a/src/portable/raspberrypi/rp2040/hcd_rp2040.c
++++ b/src/portable/raspberrypi/rp2040/hcd_rp2040.c
+@@ -30,6 +30,8 @@
+ #if CFG_TUH_ENABLED && (CFG_TUSB_MCU == OPT_MCU_RP2040) && !CFG_TUH_RPI_PIO_USB && !CFG_TUH_MAX3421
+ 
+ #include "pico.h"
++#include "hardware/sync.h"
++#include "hardware/timer.h"
+ #include "rp2040_usb.h"
+ 
+ //--------------------------------------------------------------------+
+@@ -58,6 +60,34 @@ static_assert(PICO_USB_HOST_INTERRUPT_ENDPOINTS <= USB_MAX_ENDPOINTS, "");
+ static struct hw_endpoint ep_pool[1 + PICO_USB_HOST_INTERRUPT_ENDPOINTS];
+ #define epx (ep_pool[0])
+ 
++// RP2040 uses one set of SIE handshake latches for EPX and the automatically
++// polled interrupt endpoints.  Keep interrupt polling disabled while an EPX
++// control transfer is active, otherwise a HID NAK can overwrite the result of
++// a simultaneous EPX transaction and stall enumeration of another device.
++static uint32_t saved_int_ep_ctrl;
++static bool int_ep_suppressed;
++
++static void suppress_int_polling(void)
++{
++  if (!int_ep_suppressed)
++  {
++    saved_int_ep_ctrl = usb_hw->int_ep_ctrl;
++    int_ep_suppressed = true;
++    usb_hw->int_ep_ctrl = 0;
++    // APB writes need time to reach the 48 MHz USB SIE before START_TRANS.
++    busy_wait_us(1);
++  }
++}
++
++static void __tusb_irq_path_func(restore_int_polling)(void)
++{
++  if (int_ep_suppressed && !epx.active)
++  {
++    usb_hw->int_ep_ctrl = saved_int_ep_ctrl;
++    int_ep_suppressed = false;
++  }
++}
++
+ // Flags we set by default in sie_ctrl (we add other bits on top)
+ enum {
+   SIE_CTRL_BASE = USB_SIE_CTRL_SOF_EN_BITS      | USB_SIE_CTRL_KEEP_ALIVE_EN_BITS |
+@@ -270,6 +300,10 @@ static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
+   {
+     panic("Unhandled IRQ 0x%x\n", (uint) (status ^ handled));
+   }
++
++  // hw_xfer_complete() clears epx.active.  Restore polling only after every
++  // phase of the EPX transfer has completed and its status has been consumed.
++  restore_int_polling();
+ }
+ 
+ void __tusb_irq_path_func(hcd_int_handler)(uint8_t rhport, bool in_isr) {
+@@ -414,6 +448,8 @@ bool hcd_init(uint8_t rhport)
+ 
+   // clear epx and interrupt eps
+   memset(&ep_pool, 0, sizeof(ep_pool));
++  saved_int_ep_ctrl = 0;
++  int_ep_suppressed = false;
+ 
+   // Enable in host mode with SOF / Keep alive on
+   usb_hw->main_ctrl = USB_MAIN_CTRL_CONTROLLER_EN_BITS | USB_MAIN_CTRL_HOST_NDEVICE_BITS;
+@@ -598,6 +634,8 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t *
+   // already be configured
+   if ( ep == &epx )
+   {
++    uint32_t const irq_state = save_and_disable_interrupts();
++    suppress_int_polling();
+     hw_endpoint_xfer_start(ep, buffer, buflen);
+ 
+     // That has set up buffer control, endpoint control etc
+@@ -611,8 +649,9 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t *
+     // described in RP2040 Datasheet, release 2.1, section "4.1.2.5.1. Concurrent access".
+     // We write everything except the START_TRANS bit first, then wait some cycles.
+     usb_hw->sie_ctrl = flags & ~USB_SIE_CTRL_START_TRANS_BITS;
+-    busy_wait_at_least_cycles(12);
++    busy_wait_us(1);
+     usb_hw->sie_ctrl = flags;
++    restore_interrupts(irq_state);
+   }else
+   {
+     hw_endpoint_xfer_start(ep, buffer, buflen);
+@@ -633,6 +672,9 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet
+ {
+   (void) rhport;
+ 
++  uint32_t const irq_state = save_and_disable_interrupts();
++  suppress_int_polling();
++
+   // Copy data into setup packet buffer
+   for ( uint8_t i = 0; i < 8; i++ )
+   {
+@@ -664,9 +706,11 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet
+   // described in RP2040 Datasheet, release 2.1, section "4.1.2.5.1. Concurrent access".
+   // We write everything except the START_TRANS bit first, then wait some cycles.
+   usb_hw->sie_ctrl = flags & ~USB_SIE_CTRL_START_TRANS_BITS;
+-  busy_wait_at_least_cycles(12);
++  busy_wait_us(1);
+   usb_hw->sie_ctrl = flags;
+ 
++  restore_interrupts(irq_state);
++
+   return true;
+ }
+ 

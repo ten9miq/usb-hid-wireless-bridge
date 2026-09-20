@@ -7,6 +7,7 @@
 #include "pico/time.h"
 
 #include "descriptor_parser.h"
+#include "hid_host_utils.h"
 #include "out_report.h"
 #include "remapper.h"
 #include "tick.h"
@@ -78,7 +79,9 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
     descriptor_received_callback(vid, pid, desc_report, desc_len, (uint16_t) (dev_addr << 8) | instance, hub_port, itf_num);
 
-    tuh_hid_receive_report(dev_addr, instance);
+    if (itf_info.desc.bNumEndpoints && hid_report_descriptor_has_input(desc_report, desc_len)) {
+        tuh_hid_receive_report(dev_addr, instance);
+    }
 }
 
 void umount_callback(uint8_t dev_addr, uint8_t instance) {

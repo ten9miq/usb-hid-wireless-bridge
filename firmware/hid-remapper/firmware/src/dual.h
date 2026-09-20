@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "hid_host_diagnostics.h"
+
 enum class DualCommand : uint8_t {
     DEVICE_CONNECTED = 1,
     DEVICE_DISCONNECTED = 2,
@@ -17,6 +19,7 @@ enum class DualCommand : uint8_t {
     GET_FEATURE_RESPONSE = 11,
     SET_FEATURE_COMPLETE = 12,
     MIDI_RECEIVED = 13,
+    HID_HOST_DIAGNOSTIC = 14,
 };
 
 struct __attribute__((packed)) device_connected_t {
@@ -103,6 +106,14 @@ struct __attribute__((packed)) midi_received_t {
     DualCommand command = DualCommand::MIDI_RECEIVED;
     uint8_t hub_port;
     uint8_t msg[4];
+};
+
+// This is a transport record between the two RP2040s, not an input HID
+// report.  A wraps its payload in a separate vendor-defined report ID before
+// sending it to the PC when HID_HOST_DIAGNOSTICS is enabled.
+struct __attribute__((packed)) dual_hid_host_diagnostic_t {
+    DualCommand command = DualCommand::HID_HOST_DIAGNOSTIC;
+    hid_host_diagnostic_t diagnostic;
 };
 
 #endif

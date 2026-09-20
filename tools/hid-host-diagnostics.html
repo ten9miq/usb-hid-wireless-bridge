@@ -1,0 +1,426 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>HID host diagnostics</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 2rem; }
+  button { padding: .5rem .75rem; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  th, td { border: 1px solid #bbb; padding: .35rem .5rem; text-align: left; }
+  #status { margin-left: .75rem; }
+</style>
+<button id="connect">Connect configuration HID</button><span id="status">Idle</span>
+<p id="heartbeat">Heartbeat: none received</p>
+<p id="last-received">Last received report: none</p>
+<button id="capture-hcd-baseline" disabled>Capture HCD baseline</button>
+<span id="hcd-baseline-status">No baseline captured</span>
+<table>
+  <caption>RP2040 host-controller snapshot (diagnostic event 15)</caption>
+  <thead><tr><th>Sample</th><th>EPX / suppression</th><th>INT_EP_CTRL / enabled</th><th>Endpoint slots C/K/A/B</th><th>Control timeout / error</th><th>Open failures</th><th>HID instances</th></tr></thead>
+  <tbody id="hcd-snapshots"><tr><td colspan="7">No HCD snapshot received</td></tr></tbody>
+</table>
+<table>
+  <caption>B diagnostic UART transport heartbeat (diagnostic event 16)</caption>
+  <thead><tr><th>Event 15 generated</th><th>Diagnostic serial write</th><th>Pending state</th><th>Event 12 generated / sent</th></tr></thead>
+  <tbody id="diagnostic-transport"><tr><td colspan="4">No B diagnostic transport heartbeat received</td></tr></tbody>
+</table>
+<table>
+  <caption>Per-device report counters (diagnostic event 12)</caption>
+  <thead><tr><th>Device</th><th>VID:PID</th><th>Address / instance</th><th>B receive</th><th>A UART receive</th></tr></thead>
+  <tbody id="counters"><tr><td colspan="5">No counter snapshots received</td></tr></tbody>
+</table>
+<table>
+  <caption>A-side physical-hub Cursor counters (diagnostic event 13)</caption>
+  <thead><tr><th>Hub port</th><th>Parsed nonzero X / Y</th><th>read_input X / Y</th><th>Last parsed X / Y</th><th>Reports</th></tr></thead>
+  <tbody id="usage-counters"><tr><td colspan="5">No input counter snapshots received</td></tr></tbody>
+</table>
+<table>
+  <caption>A-side mouse output counters (diagnostic event 14)</caption>
+  <thead><tr><th>Mapping nonzero frames X / Y</th><th>Accumulated additions X / Y</th><th>Mouse reports built</th><th>Queue accepted</th><th>USB sent</th></tr></thead>
+  <tbody id="output-counters"><tr><td colspan="5">No output counter snapshot received</td></tr></tbody>
+</table>
+<pre id="raw"></pre>
+<table>
+  <thead><tr><th>Event</th><th>Success</th><th>Address / instance</th><th>Interface</th><th>VID:PID</th><th>Descriptor / received</th><th>Raw report bytes</th><th>Raw descriptor bytes</th><th>Hub</th></tr></thead>
+  <tbody id="events"></tbody>
+</table>
+<script>
+const reportId = 0x66;
+const events = {
+  0: "heartbeat", 1: "mount", 2: "unmount", 3: "receive arm",
+  4: "receive report", 5: "device connected", 6: "HCD device attach",
+  7: "HCD device remove", 8: "enumeration control failure",
+  9: "endpoint open failure", 10: "HID instance capacity",
+  11: "parsed Cursor usage", 12: "report counters",
+  13: "input counters", 14: "output counters", 15: "HCD snapshot",
+  16: "B diagnostic transport"
+};
+const status = document.querySelector("#status");
+const heartbeat = document.querySelector("#heartbeat");
+const lastReceived = document.querySelector("#last-received");
+const raw = document.querySelector("#raw");
+const tbody = document.querySelector("#events");
+const counterBody = document.querySelector("#counters");
+const usageCounterBody = document.querySelector("#usage-counters");
+const outputCounterBody = document.querySelector("#output-counters");
+const hcdSnapshotBody = document.querySelector("#hcd-snapshots");
+const diagnosticTransportBody = document.querySelector("#diagnostic-transport");
+const hcdBaselineButton = document.querySelector("#capture-hcd-baseline");
+const hcdBaselineStatus = document.querySelector("#hcd-baseline-status");
+let heartbeatCount = 0;
+const descriptorFragments = new Map();
+const counterSnapshots = new Map();
+const usageCounterSnapshots = new Map();
+let latestHcdSnapshot = null;
+let latestDiagnosticTransportSnapshot = null;
+let hcdBaseline = null;
+
+function hex(value, digits) {
+  return value.toString(16).toUpperCase().padStart(digits, "0");
+}
+
+function descriptorFragment(data, eventCode) {
+  if (eventCode !== 5 || data.byteLength < 63) return null;
+  const offset = data.getUint16(38, true);
+  const length = Math.min(data.getUint8(40), 22, Math.max(0, data.byteLength - 41));
+  if (length === 0) return null;
+  const bytes = [];
+  for (let i = 0; i < length; i++) bytes.push(data.getUint8(41 + i));
+  return { offset, bytes };
+}
+
+function recordDescriptorFragment(data, eventCode) {
+  const fragment = descriptorFragment(data, eventCode);
+  if (!fragment) return "—";
+  const totalLength = data.getUint16(20, true);
+  const key = `${data.getUint8(7)}:${data.getUint8(8)}:${totalLength}`;
+  let descriptor = descriptorFragments.get(key);
+  if (!descriptor) {
+    descriptor = new Uint8Array(totalLength);
+    descriptorFragments.set(key, descriptor);
+  }
+  descriptor.set(fragment.bytes, fragment.offset);
+  const fragmentText = `${fragment.offset}..${fragment.offset + fragment.bytes.length - 1}: ${fragment.bytes.map(byte => hex(byte, 2)).join(" ")}`;
+  if (fragment.offset + fragment.bytes.length === totalLength) {
+    raw.textContent = `descriptor ${key}, ${totalLength} bytes\n${Array.from(descriptor, byte => hex(byte, 2)).join(" ")}`;
+  }
+  return fragmentText;
+}
+
+function parsedUsage(data, eventCode) {
+  if (eventCode !== 11 || data.byteLength < 33 || data.getUint8(24) < 8) return null;
+  return {
+    usage: data.getUint32(25, true),
+    value: data.getInt32(29, true),
+  };
+}
+
+function deviceName(vid, pid) {
+  const known = {
+    "046D:C06B": "G700s",
+    "046D:C531": "G700s receiver",
+    "0B33:2000": "RollerMouse",
+    "0B33:3022": "RollerMouse",
+  };
+  return known[`${hex(vid, 4)}:${hex(pid, 4)}`] || "Unknown";
+}
+
+function ageText(ageMs) {
+  if (ageMs === 0xFFFFFFFF) return "never";
+  if (ageMs < 1000) return `${ageMs} ms`;
+  return `${(ageMs / 1000).toFixed(1)} s`;
+}
+
+function renderCounterSnapshots() {
+  counterBody.replaceChildren();
+  if (counterSnapshots.size === 0) {
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No counter snapshots received";
+    const row = document.createElement("tr");
+    row.append(cell);
+    counterBody.append(row);
+    return;
+  }
+  for (const item of counterSnapshots.values()) {
+    const row = document.createElement("tr");
+    for (const text of [
+      item.name, item.vidPid, item.addressInstance,
+      `count ${item.bCount}; last ${item.bLength} B; age ${ageText(item.bAge)}`,
+      `count ${item.aCount}; last ${item.aLength} B; age ${ageText(item.aAge)}`,
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    counterBody.append(row);
+  }
+}
+
+function removeCounterSnapshot(data, eventCode) {
+  if (eventCode !== 2) return;
+  const addressInstance = `${data.getUint8(7)} / ${data.getUint8(8)}`;
+  if (counterSnapshots.delete(addressInstance)) renderCounterSnapshots();
+}
+
+function reportCounters(data, eventCode) {
+  if (eventCode !== 12 || data.byteLength < 63 ||
+      data.getUint8(24) < 8 || data.getUint8(40) < 8) return;
+  const vid = data.getUint16(16, true);
+  const pid = data.getUint16(18, true);
+  const snapshot = {
+    name: deviceName(vid, pid),
+    vidPid: `${hex(vid, 4)}:${hex(pid, 4)}`,
+    addressInstance: `${data.getUint8(7)} / ${data.getUint8(8)}`,
+    bCount: data.getUint32(25, true),
+    bLength: data.getUint16(22, true),
+    bAge: data.getUint32(29, true),
+    aCount: data.getUint32(41, true),
+    aLength: data.getUint16(36, true),
+    aAge: data.getUint32(45, true),
+  };
+  counterSnapshots.set(snapshot.addressInstance, snapshot);
+  renderCounterSnapshots();
+}
+
+function renderUsageCounterSnapshots() {
+  usageCounterBody.replaceChildren();
+  if (usageCounterSnapshots.size === 0) {
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No input counter snapshots received";
+    const row = document.createElement("tr");
+    row.append(cell);
+    usageCounterBody.append(row);
+    return;
+  }
+  for (const item of usageCounterSnapshots.values()) {
+    const row = document.createElement("tr");
+    for (const text of [
+      item.hubPort, `${item.parsedX} / ${item.parsedY}`,
+      `${item.readInputX} / ${item.readInputY}`,
+      `${item.lastParsedX} / ${item.lastParsedY}`, item.reports,
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    usageCounterBody.append(row);
+  }
+}
+
+function usageCounters(data, eventCode) {
+  if (eventCode !== 13 || data.byteLength < 63 ||
+      data.getUint8(24) < 8 || data.getUint8(40) < 20) return;
+  const snapshot = {
+    hubPort: data.getUint8(15),
+    parsedX: data.getUint32(25, true), parsedY: data.getUint32(29, true),
+    readInputX: data.getUint32(41, true), readInputY: data.getUint32(45, true),
+    lastParsedX: data.getInt32(49, true), lastParsedY: data.getInt32(53, true),
+    reports: data.getUint32(57, true),
+  };
+  usageCounterSnapshots.set(snapshot.hubPort, snapshot);
+  renderUsageCounterSnapshots();
+}
+
+function outputCounters(data, eventCode) {
+  if (eventCode !== 14 || data.byteLength < 63 ||
+      data.getUint8(24) < 8 || data.getUint8(40) < 20) return;
+  const row = document.createElement("tr");
+  for (const text of [
+    `${data.getUint32(25, true)} / ${data.getUint32(29, true)}`,
+    `${data.getUint32(41, true)} / ${data.getUint32(45, true)}`,
+    String(data.getUint32(49, true)), String(data.getUint32(53, true)), String(data.getUint32(57, true)),
+  ]) {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    row.append(cell);
+  }
+  outputCounterBody.replaceChildren(row);
+}
+
+function endpointStates(snapshot) {
+  const states = [];
+  for (let slot = 0; slot < snapshot.slotCount; slot++) {
+    const bit = 1 << slot;
+    states.push(`${slot + 1}:${snapshot.configured & bit ? "C" : "-"}${snapshot.claimed & bit ? "K" : "-"}${snapshot.active & bit ? "A" : "-"}${snapshot.busy & bit ? "B" : "-"}`);
+  }
+  return states.join(" ");
+}
+
+function renderHcdSnapshots() {
+  hcdSnapshotBody.replaceChildren();
+  const samples = [["Baseline", hcdBaseline], ["Latest", latestHcdSnapshot]];
+  for (const [label, item] of samples) {
+    if (!item) continue;
+    const row = document.createElement("tr");
+    for (const text of [
+      label,
+      `configured ${item.epx & 1 ? "yes" : "no"}; active ${item.epx & 2 ? "yes" : "no"}; pending ${item.epx & 4 ? "yes" : "no"}; suppressed ${item.suppressed ? "yes" : "no"}`,
+      `${hex(item.currentCtrl, 8)} / ${hex(item.enabled, 4)} (saved ${hex(item.savedCtrl, 8)})`,
+      endpointStates(item), `${item.timeouts} / ${item.errors}`,
+      String(item.openFailures), String(item.hidInstances),
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    hcdSnapshotBody.append(row);
+  }
+  if (!latestHcdSnapshot && !hcdBaseline) {
+    const cell = document.createElement("td");
+    cell.colSpan = 7;
+    cell.textContent = "No HCD snapshot received";
+    const row = document.createElement("tr");
+    row.append(cell);
+    hcdSnapshotBody.append(row);
+  }
+}
+
+function hcdSnapshot(data, eventCode) {
+  // HCD snapshots describe the controller as a whole, not one HID
+  // interface.  Their address/instance fields are therefore commonly 0/0.
+  if (eventCode !== 15 || data.byteLength < 63) return;
+  latestHcdSnapshot = {
+    slotCount: Math.min(data.getUint8(8), 15), suppressed: data.getUint8(9),
+    epx: data.getUint8(10), hidInstances: data.getUint8(11),
+    timeouts: data.getUint32(13, true), errors: data.getUint32(17, true),
+    openFailures: data.getUint32(21, true), savedCtrl: data.getUint32(25, true),
+    currentCtrl: data.getUint32(29, true), enabled: data.getUint16(33, true),
+    configured: data.getUint16(35, true), claimed: data.getUint16(37, true),
+    active: data.getUint16(39, true), busy: data.getUint16(41, true),
+  };
+  hcdBaselineButton.disabled = false;
+  renderHcdSnapshots();
+}
+
+function diagnosticTransport(data, eventCode) {
+  if (eventCode !== 16 || data.byteLength < 63 ||
+      data.getUint8(24) < 8 || data.getUint8(40) < 16) return;
+  const pending = data.getUint32(45, true);
+  latestDiagnosticTransportSnapshot = {
+    hcdGenerated: data.getUint32(25, true),
+    serialSuccess: data.getUint32(29, true),
+    serialFailure: data.getUint32(41, true),
+    normalPending: pending & 0xFF,
+    counterPending: (pending >>> 8) & 0xFF,
+    hcdPending: Boolean(pending & 0x10000),
+    transportPending: Boolean(pending & 0x20000),
+    counterGenerated: data.getUint32(49, true),
+    counterSent: data.getUint32(53, true),
+  };
+  const item = latestDiagnosticTransportSnapshot;
+  const row = document.createElement("tr");
+  for (const text of [
+    String(item.hcdGenerated),
+    `success ${item.serialSuccess}; failure ${item.serialFailure}`,
+    `ordinary ${item.normalPending}; event 12 ${item.counterPending}; event 15 ${item.hcdPending ? "yes" : "no"}; event 16 ${item.transportPending ? "yes" : "no"}`,
+    `${item.counterGenerated} / ${item.counterSent}`,
+  ]) {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    row.append(cell);
+  }
+  diagnosticTransportBody.replaceChildren(row);
+}
+
+function addEvent(event) {
+  const data = event.data;
+  const bytes = [];
+  for (let i = 0; i < data.byteLength; i++) bytes.push(hex(data.getUint8(i), 2));
+  raw.textContent = `last inputreport: id=${event.reportId} length=${data.byteLength}\n${bytes.join(" ")}`;
+  status.textContent = `Listening: report ID ${event.reportId}, ${data.byteLength} bytes`;
+  if (event.reportId !== reportId) return;
+  if (data.byteLength < 24 ||
+      String.fromCharCode(data.getUint8(0), data.getUint8(1), data.getUint8(2), data.getUint8(3)) !== "HHD1" ||
+      ![1, 2].includes(data.getUint8(4))) return;
+  if (data.getUint8(5) === 0) {
+    heartbeatCount++;
+    heartbeat.textContent = `Heartbeat: ${heartbeatCount} received; last ${new Date().toLocaleTimeString()}`;
+  }
+  if (data.getUint8(5) === 4) {
+    const rawLength = Math.min(data.getUint8(24), 8, Math.max(0, data.byteLength - 25));
+    const rawBytes = [];
+    for (let i = 0; i < rawLength; i++) rawBytes.push(hex(data.getUint8(25 + i), 2));
+    lastReceived.textContent = `Last received report: address ${data.getUint8(7)}, instance ${data.getUint8(8)}, ${data.getUint16(22, true)} bytes; raw ${rawBytes.join(" ") || "none"}; ${new Date().toLocaleTimeString()}`;
+  }
+  const flags = data.getUint8(6);
+  const eventCode = data.getUint8(5);
+  const rawDescriptorBytes = recordDescriptorFragment(data, eventCode);
+  const parsed = parsedUsage(data, eventCode);
+  removeCounterSnapshot(data, eventCode);
+  reportCounters(data, eventCode);
+  usageCounters(data, eventCode);
+  outputCounters(data, eventCode);
+  hcdSnapshot(data, eventCode);
+  diagnosticTransport(data, eventCode);
+  // Heartbeats are only a transport-health indicator. Keep their counter and
+  // timestamp above, but do not let them bury mount/report diagnostics.
+  if (eventCode === 0 || eventCode === 12 || eventCode === 13 || eventCode === 14 || eventCode === 15 || eventCode === 16) return;
+  const row = document.createElement("tr");
+  const cells = [
+    events[eventCode] || `unknown (${eventCode})`,
+    flags & 1 ? "yes" : "no",
+    `${data.getUint8(7)} / ${data.getUint8(8)}`,
+    `#${data.getUint8(9)} class ${hex(data.getUint8(10), 2)} sub ${hex(data.getUint8(11), 2)} proto ${hex(data.getUint8(12), 2)} ep ${data.getUint8(13)}`,
+    `${hex(data.getUint16(16, true), 4)}:${hex(data.getUint16(18, true), 4)}`,
+    eventCode === 8
+      ? `stage ${data.getUint8(33)}; xfer result ${data.getUint8(34)}; request ${hex(data.getUint16(22, true), 2)}`
+      : eventCode === 9
+        ? `endpoint ${hex(data.getUint8(35), 2)}; packet ${data.getUint16(36, true)} bytes`
+        : eventCode === 10
+          ? `interface ${data.getUint8(9)}; HID capacity ${data.getUint16(22, true)}`
+          : eventCode === 11 && parsed
+            ? `usage ${hex(parsed.usage, 8)}; value ${parsed.value}`
+          : `${data.getUint16(20, true)} bytes; received ${data.getUint16(22, true)} bytes; input ${flags & 2 ? "yes" : "no"}; info ${flags & 4 ? "yes" : "no"}`,
+    data.getUint8(5) === 4
+      ? Array.from({ length: Math.min(data.getUint8(24), 8, Math.max(0, data.byteLength - 25)) }, (_, i) => hex(data.getUint8(25 + i), 2)).join(" ") || "none"
+      : "—",
+    rawDescriptorBytes,
+    `${data.getUint8(14)}:${data.getUint8(15)}`,
+  ];
+  for (const text of cells) {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    row.append(cell);
+  }
+  tbody.prepend(row);
+  while (tbody.children.length > 100) tbody.lastElementChild.remove();
+}
+
+document.querySelector("#connect").addEventListener("click", async () => {
+  if (!navigator.hid) {
+    status.textContent = "WebHID is unavailable; open this page in Chrome or Edge from localhost/HTTPS.";
+    return;
+  }
+  try {
+    // The HID device's top-level configuration collection is Usage 0x20.
+    // Diagnostic report ID 0x66 is a child collection and cannot be used as
+    // a WebHID device-selection filter. Filter only by the vendor page, then
+    // select the configuration interface in the returned chooser.
+    const [device] = await navigator.hid.requestDevice({ filters: [{ usagePage: 0xFF00 }] });
+    if (!device) return;
+    device.addEventListener("inputreport", addEvent);
+    await device.open();
+    status.textContent = `Listening: ${device.productName || "HID device"}`;
+  } catch (error) {
+    status.textContent = `Error: ${error.message}`;
+  }
+});
+
+hcdBaselineButton.addEventListener("click", () => {
+  if (!latestHcdSnapshot) return;
+  hcdBaseline = { ...latestHcdSnapshot };
+  hcdBaselineStatus.textContent = `Baseline captured at ${new Date().toLocaleTimeString()}`;
+  renderHcdSnapshots();
+});
+
+// A test harness may opt in before loading this page.  It exercises the same
+// WebHID inputreport parser without changing production-page behavior.
+if (globalThis.__HID_HOST_DIAGNOSTICS_TEST__) {
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.addEvent = addEvent;
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.counterSnapshots = counterSnapshots;
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.usageCounterSnapshots = usageCounterSnapshots;
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.getLatestHcdSnapshot = () => latestHcdSnapshot;
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.getLatestDiagnosticTransportSnapshot = () => latestDiagnosticTransportSnapshot;
+}
+</script>

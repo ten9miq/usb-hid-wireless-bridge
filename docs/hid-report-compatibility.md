@@ -46,8 +46,20 @@ B側は列挙前に`tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT)`を指定�
 
 この変更でデバイス固有quirkは追加しません。実機確認では、HID RemapperのMonitorにKeyboard/Keypad usage `0x00070059`–`0x00070063`とnavigation usageが出ることを先に確認し、その後WBT2-V4経由のRaw Inputと照合します。Monitorにも出ない場合は、B側が受信したreport descriptorとreport byte列の採取が次の切り分けになります。
 
+## 誤ったArray宣言のNKRO入力
+
+一部のキーボードは、Logical range `0`–`1`、Report Size `1`でusage範囲と同数のbitを送るbitmap入力を、descriptor上では誤って`Data,Array,Absolute`と宣言します。この宣言を通常のArrayとして読むと、各bitがキーusageではなくArray indexとして扱われるため、NumLockやテンキーを含むキー状態が別usageへ化けます。
+
+入力parserは、1-bit、Logical range `0`–`1`、Usage Minimum/Maximumの要素数とReport Countが一致し、要素数が3以上という構造を満たす場合だけ、内部的に`Data,Variable,Absolute`として扱います。通常の6KRO arrayや、小さいselector arrayには適用されません。LinuxのTopre向け修正と同じArray→Variable補正ですが、descriptor自身の矛盾とbitmap形状から判定するためVID/PID固定ではありません。
+
 ## NumLock LED同期
 
 WBT2側からのKeyboard Output reportはA側interface 0でReport IDなしの1 byteとして受信し、下位5 bit（Num Lock、Caps Lock、Scroll Lock、Compose、Kana）を保持します。保持値は内部`REPORT_ID_LEDS`へ正規化して渡され、接続中の各物理キーボードのOutput descriptorに対応するreportへ再構成されてB側の`tuh_hid_set_report()`から送信されます。
 
 A側は最後に受信したLED byteをキャッシュし、GET_REPORT(Output)にも同じ値を返します。物理キーボードが後から列挙または再列挙された場合も、内部LED入力状態が残るため次のmapping処理でそのキーボード用Output reportへ反映されます。Boot Keyboard descriptorも5 LED bits + 3 padding bitsへ揃えています。この処理はLED Usage Pageに基づく既存の汎用転送を使い、VID/PID分岐は追加しません。
+
+## テンキー同期用NumLock tapの除去
+
+Realforce 23UB（VID `0853`、PID `0117`）をPCへ直接接続したRaw Inputでは、数字5を1回操作したときに`NumLock DOWN/UP → Numpad5 DOWN/UP → NumLock DOWN/UP`が観測されました。これは本体がテンキー状態を同期するための入力列であり、単独のNumLock操作とは別です。実装上はVID/PIDを判定に使用せず、入力descriptorから復元したusage状態差分だけを見ます。
+
+最初の短いNumLock tapを20 ms保留し、直後にKeypad usage `0x54`–`0x63`の押下・解放と、さらに20 ms以内の短いNumLock tapが続いた場合だけ前後のNumLock tapを破棄します。Keypad usage自体は通常どおり処理します。完全な列にならない場合、保留したNumLockはDOWNとUPを連続するmapping frameへ必ず対で再生します。20 msを超えて保持されたNumLockは通常の押下として転送し、物理的な解放時に対応するUPを転送します。これにより同期列を除去しつつ、NumLock単独トグルで押下または解放だけが欠落する状態を避けます。
