@@ -1,20 +1,33 @@
-# WBT2: Consumer Control を Right Win + Fキーへ変換する
+# WBT2: Consumer Control を Right Shift + Fキーへ変換する
 
-WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remapper の設定だけで、通常のキーボードusageへ変換するプリセットです。ファームウェアやdescriptorは変更しません。
+WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remapperの設定で`Right Shift + F1～F11`へ変換するプリセットです。ファームウェアやdescriptorは変更しません。
 
 | 入力 Consumer usage | キーボード出力 | WBT2アプリで割り当てる組み合わせ |
 | --- | --- | --- |
-| Browser `0x000c0223` | Right Win `0x000700e7` + F1 `0x0007003a` | Right Win + F1 |
-| Mail `0x000c018a` | Right Win `0x000700e7` + F2 `0x0007003b` | Right Win + F2 |
-| Calculator `0x000c0192` | Right Win `0x000700e7` + F3 `0x0007003c` | Right Win + F3 |
-| Media Player `0x000c0183` | Right Win `0x000700e7` + F4 `0x0007003d` | Right Win + F4 |
-| Previous `0x000c00b6` | Right Win `0x000700e7` + F5 `0x0007003e` | Right Win + F5 |
-| Pause/Play `0x000c00cd` | Right Win `0x000700e7` + F6 `0x0007003f` | Right Win + F6 |
-| Next `0x000c00b5` | Right Win `0x000700e7` + F7 `0x00070040` | Right Win + F7 |
-| Stop `0x000c00b7` | Right Win `0x000700e7` + F8 `0x00070041` | Right Win + F8 |
-| Volume Up `0x000c00e9` | Right Win `0x000700e7` + F9 `0x00070042` | Right Win + F9 |
-| Volume Down `0x000c00ea` | Right Win `0x000700e7` + F10 `0x00070043` | Right Win + F10 |
-| Mute `0x000c00e2` | Right Win `0x000700e7` + F11 `0x00070044` | Right Win + F11 |
+| Browser `0x000c0223` | Right Shift `0x000700e5` + F1 `0x0007003a` | Right Shift + F1 |
+| Mail `0x000c018a` | Right Shift `0x000700e5` + F2 `0x0007003b` | Right Shift + F2 |
+| Calculator `0x000c0192` | Right Shift `0x000700e5` + F3 `0x0007003c` | Right Shift + F3 |
+| Media Player `0x000c0183` | Right Shift `0x000700e5` + F4 `0x0007003d` | Right Shift + F4 |
+| Previous `0x000c00b6` | Right Shift `0x000700e5` + F5 `0x0007003e` | Right Shift + F5 |
+| Pause/Play `0x000c00cd` | Right Shift `0x000700e5` + F6 `0x0007003f` | Right Shift + F6 |
+| Next `0x000c00b5` | Right Shift `0x000700e5` + F7 `0x00070040` | Right Shift + F7 |
+| Stop `0x000c00b7` | Right Shift `0x000700e5` + F8 `0x00070041` | Right Shift + F8 |
+| Volume Up `0x000c00e9` | Right Shift `0x000700e5` + F9 `0x00070042` | Right Shift + F9 |
+| Volume Down `0x000c00ea` | Right Shift `0x000700e5` + F10 `0x00070043` | Right Shift + F10 |
+| Mute `0x000c00e2` | Right Shift `0x000700e5` + F11 `0x00070044` | Right Shift + F11 |
+
+## F1～F3のアプリ起動
+
+WBT2-V4の`Open Browser`、`Mail`、`Open Calculator`は、今回の構成ではPC上の起動処理として安定して動作しませんでした。そのため、F1～F3はAutoHotkeyで代替します。
+
+```ahk
+#Requires AutoHotkey v2.0
+>+F1::Run "https://www.google.com"
+>+F2::Run "mailto:"
+>+F3::Run "calc.exe"
+```
+
+`>+F1`の`>`は右Shiftを意味します。WBT2からRight Shift + F1～F3がPCへ届く設定が必要です。
 
 ## 安全な適用方法
 
@@ -37,7 +50,7 @@ WBT2-V4 経由で Consumer Control がアプリに届かない場合、HID Remap
 1. Chromium系ブラウザで HID Remapper の設定ページを開き、対象デバイスへ接続する。
 2. Actions から設定をexportして退避する。
 3. Monitorで各メディアキーを押し、上表の Consumer usage とportを確認する。
-4. Mappingsで、各Consumer usageにつき2件ずつ、上表のRight Win usageとFキーusageを出力として追加する。Layerは `0`、Scalingは `1000`、Sticky/Tap/Holdはすべてオフにする。
-5. Save/Persist後、WBT2-V4経由で各キーを押し、WBT2アプリ側がそれぞれのRight Win + Fキーを検出することを確認する。
+4. Mappingsで、各Consumer usageにつき2件ずつ、上表のRight Shift usageとFキーusageを出力として追加する。Layerは `0`、Scalingは `1000`、Sticky/Tap/Holdはすべてオフにする。
+5. Save/Persist後、WBT2-V4経由で各キーを押し、WBT2アプリ側がそれぞれのRight Shift + Fキーを検出することを確認する。
 
 同時に複数のメディアキーを押す運用は想定していません。WBT2アプリの既存ショートカットと競合する場合は、アプリ側の割り当てを先に変更します。
