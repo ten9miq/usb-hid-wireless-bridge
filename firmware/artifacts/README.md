@@ -1,5 +1,15 @@
 # ビルド成果物
 
+## 2026-09-23 動作確認済みの直結版
+
+`remapper_dual_combined-current-features-historical-embedded-b-ab.uf2`
+（SHA-256 `C144E09826BB9EBF63C989E08C0EEE983A7B5A7ACB63E729D3FD62686F05EAC2`）は、
+HID-Remapper直結でRollerMouse停止時の位置跳びがなく、G700s、RealForceの
+テンキー・`=`・JISキーが動作することをユーザーが確認した版です。
+以降の候補でこのファイルを上書きしないでください。固定入力・UF2構造検査・
+実機release gateは[`../../docs/firmware-release-policy.md`](../../docs/firmware-release-policy.md)を参照してください。
+以下は過去の検証用artifactの説明で、最新の実機状態を示すものではありません。
+
 `remapper_dual_a-wbt2-simple-reports.uf2` はPC接続側（A側）用、
 `remapper_dual_b-wbt2-simple-reports.uf2` は入力デバイス側（B側）用です。
 現行B側はTinyUSBの既定Boot protocol強制を無効にし、接続デバイスの
