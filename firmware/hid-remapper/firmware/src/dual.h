@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "hid_host_diagnostics.h"
+#include "mouse_pipeline_trace.h"
 
 enum class DualCommand : uint8_t {
     DEVICE_CONNECTED = 1,
@@ -20,6 +21,9 @@ enum class DualCommand : uint8_t {
     SET_FEATURE_COMPLETE = 12,
     MIDI_RECEIVED = 13,
     HID_HOST_DIAGNOSTIC = 14,
+    MOUSE_PIPELINE_TRACE_CONTROL = 15,
+    MOUSE_PIPELINE_TRACE_REQUEST = 16,
+    MOUSE_PIPELINE_TRACE_RESPONSE = 17,
 };
 
 struct __attribute__((packed)) device_connected_t {
@@ -115,5 +119,35 @@ struct __attribute__((packed)) dual_hid_host_diagnostic_t {
     DualCommand command = DualCommand::HID_HOST_DIAGNOSTIC;
     hid_host_diagnostic_t diagnostic;
 };
+
+// Trace records are never sent while the pipeline is running. A requests a
+// frozen record/index explicitly, and B returns one asynchronous cache entry.
+struct __attribute__((packed)) mouse_pipeline_trace_control_t {
+    DualCommand command = DualCommand::MOUSE_PIPELINE_TRACE_CONTROL;
+    MousePipelineTraceAction action;
+    uint8_t filter_dev_addr;
+    uint8_t filter_instance;
+};
+
+struct __attribute__((packed)) mouse_pipeline_trace_request_t {
+    DualCommand command = DualCommand::MOUSE_PIPELINE_TRACE_REQUEST;
+    uint8_t want_info;
+    uint16_t chronological_index;
+};
+
+struct __attribute__((packed)) mouse_pipeline_trace_response_t {
+    DualCommand command = DualCommand::MOUSE_PIPELINE_TRACE_RESPONSE;
+    uint8_t want_info;
+    uint8_t valid;
+    uint8_t reserved;
+    union {
+        mouse_pipeline_trace_record_t record;
+        mouse_pipeline_trace_info_t info;
+    } payload;
+};
+
+static_assert(sizeof(mouse_pipeline_trace_control_t) == 4, "trace control protocol changed");
+static_assert(sizeof(mouse_pipeline_trace_request_t) == 4, "trace request protocol changed");
+static_assert(sizeof(mouse_pipeline_trace_response_t) == 28, "trace response protocol changed");
 
 #endif

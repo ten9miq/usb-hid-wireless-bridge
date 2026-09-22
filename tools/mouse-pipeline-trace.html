@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mouse pipeline trace</title>
+<style>body{font:14px system-ui,sans-serif;margin:2rem}button,input,select{margin:.2rem;padding:.35rem}table{border-collapse:collapse;margin-top:1rem}td,th{border:1px solid #bbb;padding:.3rem .45rem;text-align:left}pre{white-space:pre-wrap}</style>
+<button id="connect">Connect configuration HID</button><span id="status">Idle</span><br>
+<label>B endpoint dev/instance (FF=any): <input id="dev" value="FF" size="3">/<input id="instance" value="FF" size="3"></label><br>
+<button data-action="clear">Clear</button><button data-action="arm">Arm</button><button data-action="mark">Mark</button><button data-action="freeze">Freeze</button>
+<select id="source"><option value="0">A-side</option><option value="1">B-side</option></select><button id="info">Info</button><button id="fetch">Fetch frozen records</button>
+<pre id="summary"></pre><table><thead><tr><th>side</th><th>seq</th><th>time (us low)</th><th>event</th><th>raw bytes</th><th>X</th><th>Y</th><th>len</th><th>queue</th><th>value</th></tr></thead><tbody id="records"></tbody></table>
+<script>
+"use strict";
+const REPORT_ID=100, VERSION=18;
+const COMMAND={clear:26,arm:27,mark:28,freeze:29,info:30,record:31};
+const EVENT={1:"B_USB_CALLBACK",2:"B_UART_QUEUED",3:"B_UART_PENDING",4:"A_UART_RECEIVED",5:"A_DECODED_XY",6:"A_MAPPING_OUTPUT",7:"A_QUEUE_NEW",8:"A_QUEUE_AGGREGATE",9:"A_USB_SEND_BUSY",10:"A_USB_SEND_OK",11:"MARK",12:"B_USB_CALLBACK_CONT",13:"A_UART_RECEIVED_CONT"};
+let device;
+const $=id=>document.querySelector(id), sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function crc32(bytes){let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0)}return(c^0xffffffff)>>>0}
+function packet(command,data=[]){const b=new Uint8Array(32);const v=new DataView(b.buffer);b[0]=VERSION;b[1]=command;b.set(data,2);v.setUint32(28,crc32(b.subarray(0,28)),true);return b}
+function byte(id){const n=Number.parseInt($(id).value,16);if(!Number.isInteger(n)||n<0||n>255)throw Error(`${id} must be hexadecimal 00..FF`);return n}
+async function command(name,data=[]){if(!device)throw Error("Connect first");await device.sendFeatureReport(REPORT_ID,packet(COMMAND[name],data))}
+async function get(){const result=await device.receiveFeatureReport(REPORT_ID);let offset=result.byteOffset,length=result.byteLength;if(length===33&&result.getUint8(0)===REPORT_ID){offset++;length--}if(length<32)throw Error(`short Feature report: ${length} bytes`);return new DataView(result.buffer,offset,length)}
+async function selectRequest(name,source,index=0){await command(name,[source,index&255,index>>>8]);await sleep(source===1?60:15);return get()}
+function info(view){return {source:view.getUint8(0),valid:view.getUint8(1),magic:view.getUint32(4,true),version:view.getUint16(8,true),flags:view.getUint8(11),capacity:view.getUint16(12,true),count:view.getUint16(14,true),next:view.getUint32(16,true),filter:`${view.getUint8(20).toString(16).padStart(2,"0")}/${view.getUint8(21).toString(16).padStart(2,"0")}`}}
+function record(view){const event=view.getUint16(12,true),rawEvent=event===1||event===4||event===12||event===13,captured=rawEvent?view.getUint8(15):0;const raw=rawEvent?Array.from(new Uint8Array(view.buffer,view.byteOffset+16,captured),byte=>byte.toString(16).padStart(2,"0")).join(" "):"";return {source:view.getUint8(0),valid:view.getUint8(1),index:view.getUint16(2,true),seq:view.getUint32(4,true),time:view.getUint32(8,true),event,raw,x:view.getInt16(16,true),y:view.getInt16(18,true),len:view.getUint16(20,true),queue:view.getUint16(22,true),value:view.getUint32(24,true)}}
+async function readInfo(source){let lastView;for(let attempt=0;attempt<4;attempt++){lastView=await selectRequest("info",source);const value=info(lastView);if(value.valid&&value.magic===0x3154504d)return value;await sleep(40)}const raw=Array.from(new Uint8Array(lastView.buffer,lastView.byteOffset,Math.min(lastView.byteLength,28)),b=>b.toString(16).padStart(2,"0")).join(" ");throw Error(`trace info not cached after retries; raw=${raw}`)}
+async function readRecord(source,index){for(let attempt=0;attempt<4;attempt++){const value=record(await selectRequest("record",source,index));if(value.valid)return value;await sleep(40)}throw Error(`record ${index} not cached after retries`)}
+$("#connect").onclick=async()=>{try{if(!navigator.hid)throw Error("WebHID requires Chrome or Edge over localhost/HTTPS");[device]=await navigator.hid.requestDevice({filters:[{usagePage:0xff00}]});if(!device)return;await device.open();$("#status").textContent=`Connected: ${device.productName||"HID device"}`}catch(e){$("#status").textContent=`Error: ${e.message}`}};
+document.querySelectorAll("[data-action]").forEach(button=>button.onclick=async()=>{try{const name=button.dataset.action;await command(name,[byte("#dev"),byte("#instance")]);$("#status").textContent=`${name} sent to A and B`}catch(e){$("#status").textContent=`Error: ${e.message}`}});
+document.addEventListener("keydown",async event=>{const name=event.code==="F7"?"mark":event.code==="F8"?"freeze":null;if(!name)return;event.preventDefault();try{await command(name,[byte("#dev"),byte("#instance")]);$("#status").textContent=`${name} sent to A and B (${event.code})`}catch(e){$("#status").textContent=`Error: ${e.message}`}});
+$("#info").onclick=async()=>{try{const v=await readInfo(+$("#source").value);$("#summary").textContent=JSON.stringify(v,null,2)}catch(e){$("#status").textContent=`Error: ${e.message}`}};
+$("#fetch").onclick=async()=>{try{const source=+$("#source").value, meta=await readInfo(source), body=$("#records");body.replaceChildren();for(let i=0;i<meta.count;i++){const r=await readRecord(source,i),rawEvent=r.event===1||r.event===4||r.event===12||r.event===13,row=document.createElement("tr");for(const text of [r.source?"B":"A",r.seq,r.time,EVENT[r.event]||r.event,r.raw,rawEvent?"—":r.x,rawEvent?"—":r.y,rawEvent?"—":r.len,rawEvent?"—":r.queue,rawEvent?"—":`0x${r.value.toString(16)}`]){const cell=document.createElement("td");cell.textContent=text;row.append(cell)}body.append(row)}$("#summary").textContent=`${meta.count}/${meta.capacity} frozen records; armed=${!!(meta.flags&1)}, frozen=${!!(meta.flags&2)}, filter=${meta.filter}`}catch(e){$("#status").textContent=`Error: ${e.message}`}};
+</script>

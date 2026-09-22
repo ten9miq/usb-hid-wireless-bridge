@@ -40,6 +40,9 @@ const uint32_t MIDI_USAGE_PAGE = 0xFFF70000;
 
 const uint32_t ROLLOVER_USAGE = 0x00070001;
 const uint32_t NUM_LOCK_USAGE = 0x00070053;
+#ifndef STABLE_NUM_LOCK_INFERENCE
+static uint16_t num_lock_source_count = 0;
+#endif
 
 const uint16_t STACK_SIZE = 16;
 
@@ -453,6 +456,172 @@ inline int32_t* get_state_ptr(uint32_t usage, uint8_t hub_port, bool assign_if_a
     return NULL;
 }
 
+#ifdef ALT_NUMPAD_EQUALS
+// RealForce emits its dedicated '=' key as Alt+Numpad6+Numpad1.  When the
+// host NumLock state is suppressed, Windows interprets those usages as
+// navigation keys.  Detect the exact simultaneous chord and replace it with
+// the ordinary keyboard '=' usage without changing the HID descriptor.
+// On a Japanese (JIS) Windows layout, the HID '=' usage (0x2E) is the '^'
+// key.  '=' is Shift+'-' (usage 0x2D), so emit that physical combination.
+static const uint32_t ALT_NUMPAD_EQUALS_USAGE = 0x0007002D;
+static const uint32_t SHIFT_LEFT_USAGE = 0x000700E1;
+static const uint32_t ALT_LEFT_USAGE = 0x000700E2;
+static const uint32_t ALT_RIGHT_USAGE = 0x000700E6;
+static const uint32_t NUMPAD_1_USAGE = 0x00070059;
+static const uint32_t NUMPAD_6_USAGE = 0x0007005E;
+static const uint32_t TOP_1_USAGE = 0x0007001E;
+static const uint32_t TOP_6_USAGE = 0x00070023;
+
+static bool alt_numpad_equals_active = false;
+
+static bool input_usage_active(uint32_t usage) {
+    int32_t* state = get_state_ptr(usage, 0, false);
+    return state != nullptr && *state != 0;
+}
+
+static void clear_output_usage(uint32_t usage);
+static void set_output_usage(uint32_t usage);
+
+#if defined(WBT2_BOOT_INTERFACES) && !defined(STABLE_NUM_LOCK_INFERENCE)
+static bool get_inferred_num_lock_state(bool& state);
+static bool physical_keypad_is_active();
+#endif
+
+static bool host_num_lock_active() {
+#ifdef WBT2_BOOT_INTERFACES
+#ifndef STABLE_NUM_LOCK_INFERENCE
+    // The receiver-side NumLock state is intentionally separate from the
+    // filtered NumLock state sent to the PC.  A WBT2 wrapper can contain a
+    // NumLock usage which is suppressed before mapping, so the output state
+    // is not a reliable source for deciding how keypad input should map.
+    bool inferred_state = false;
+    if (get_inferred_num_lock_state(inferred_state)) {
+        return inferred_state;
+    }
+    // Before the first physical keypad/NumLock observation, the filtered
+    // output state is intentionally still false.  Treat that unknown state
+    // as ON so ordinary number output is not suppressed during startup.
+    return true;
+#else
+    // Preserve the pre-c436 wrapper-only baseline: wrappers are still
+    // suppressed, but no physical NumLock state is inferred from them.
+    return true;
+#endif
+#else
+    // Some receivers expose keypad usages but no NumLock input usage. Treat
+    // the absent signal as unknown, not as OFF.
+#ifndef STABLE_NUM_LOCK_INFERENCE
+    if (num_lock_source_count == 0) {
+        return true;
+    }
+#endif
+    int32_t* state = get_state_ptr(NUM_LOCK_USAGE, 0, false);
+    // If the filter is not present, retain the legacy mapping behavior.
+    return state == nullptr || *state != 0;
+#endif
+}
+
+static void apply_num_lock_aware_keypad_output() {
+    if (host_num_lock_active()) {
+        return;
+    }
+#if defined(WBT2_BOOT_INTERFACES) && !defined(STABLE_NUM_LOCK_INFERENCE)
+    // Do not infer keypad activity from mapped state slots here.  WBT2 can
+    // expose the same keyboard through a different hub-port state slot; the
+    // report-level filter is the authoritative source for this frame.
+    if (!physical_keypad_is_active()) {
+        return;
+    }
+#endif
+
+    // The JSON mapping normalizes keypad digits to the top-row digits.  When
+    // NumLock is OFF that would turn Home/End/PgUp/Ins into numbers. Restore
+    // the original keypad usages in the output report while NumLock is off.
+    for (uint32_t i = 0; i < 10; i++) {
+        uint32_t keypad = 0x00070059 + i;
+        uint32_t top = 0x0007001E + i;
+        if (input_usage_active(keypad)) {
+            // Only replace the mapped output when this specific keypad key
+            // is pressed.  Clearing all top-row digits unconditionally would
+            // also swallow ordinary number-row input while NumLock is OFF.
+            clear_output_usage(top);
+            set_output_usage(keypad);
+        }
+    }
+}
+
+static void clear_output_usage(uint32_t usage) {
+    for (auto const& array_usage : our_array_range_usages) {
+        if ((usage >= array_usage.usage) &&
+            (usage <= array_usage.usage_def.usage_maximum)) {
+            for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                uint16_t bitpos = array_usage.usage_def.bitpos + i * array_usage.usage_def.size;
+                uint32_t value = get_bits(reports[array_usage.usage_def.report_id],
+                    report_sizes[array_usage.usage_def.report_id], bitpos, array_usage.usage_def.size);
+                uint32_t expected = array_usage.usage_def.logical_minimum + usage - array_usage.usage;
+                if (value == expected) {
+                    put_bits(reports[array_usage.usage_def.report_id],
+                        report_sizes[array_usage.usage_def.report_id], bitpos,
+                        array_usage.usage_def.size, 0);
+                }
+            }
+            return;
+        }
+    }
+    auto search = our_usages_flat.find(usage);
+    if (search != our_usages_flat.end()) {
+        const usage_def_t& def = search->second;
+        put_bits(reports[def.report_id], report_sizes[def.report_id], def.bitpos, def.size, 0);
+    }
+}
+
+static void set_output_usage(uint32_t usage) {
+    for (auto const& array_usage : our_array_range_usages) {
+        if ((usage >= array_usage.usage) &&
+            (usage <= array_usage.usage_def.usage_maximum)) {
+            for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                uint16_t bitpos = array_usage.usage_def.bitpos + i * array_usage.usage_def.size;
+                uint32_t value = get_bits(reports[array_usage.usage_def.report_id],
+                    report_sizes[array_usage.usage_def.report_id], bitpos, array_usage.usage_def.size);
+                if (value == 0) {
+                    uint32_t encoded = array_usage.usage_def.logical_minimum + usage - array_usage.usage;
+                    put_bits(reports[array_usage.usage_def.report_id],
+                        report_sizes[array_usage.usage_def.report_id], bitpos,
+                        array_usage.usage_def.size, encoded);
+                    break;
+                }
+            }
+            return;
+        }
+    }
+    auto search = our_usages_flat.find(usage);
+    if (search != our_usages_flat.end()) {
+        const usage_def_t& def = search->second;
+        put_bits(reports[def.report_id], report_sizes[def.report_id], def.bitpos, def.size, 1);
+    }
+}
+
+static void apply_alt_numpad_equals_chord() {
+    bool chord = (input_usage_active(ALT_LEFT_USAGE) || input_usage_active(ALT_RIGHT_USAGE)) &&
+        input_usage_active(NUMPAD_6_USAGE) && input_usage_active(NUMPAD_1_USAGE);
+    if (!chord && !alt_numpad_equals_active) {
+        return;
+    }
+
+    // Clear both the original keypad usages and the normal-number targets so
+    // this remains safe with either the layered or the legacy JSON mapping.
+    for (uint32_t usage : {ALT_LEFT_USAGE, ALT_RIGHT_USAGE, NUMPAD_6_USAGE,
+                           NUMPAD_1_USAGE, TOP_6_USAGE, TOP_1_USAGE}) {
+        clear_output_usage(usage);
+    }
+    if (chord) {
+        set_output_usage(ALT_NUMPAD_EQUALS_USAGE);
+        set_output_usage(SHIFT_LEFT_USAGE);
+    }
+    alt_numpad_equals_active = chord;
+}
+#endif
+
 #ifdef WBT2_BOOT_INTERFACES
 enum class NumLockSyncStage : uint8_t {
     IDLE,
@@ -472,11 +641,59 @@ struct num_lock_sync_filter_t {
     bool previous_num_lock = false;
     bool previous_keypad = false;
     bool output_num_lock = false;
+#ifndef STABLE_NUM_LOCK_INFERENCE
+    bool has_num_lock_usage = false;
+    bool inferred_num_lock_state = false;
+    bool inferred_num_lock_valid = false;
+    uint64_t inferred_num_lock_timestamp = 0;
+#endif
     uint64_t deadline = 0;
 };
 
 static const uint64_t NUM_LOCK_SYNC_EDGE_US = 20000;
 static std::unordered_map<uint16_t, num_lock_sync_filter_t> num_lock_sync_filters;
+
+#ifndef STABLE_NUM_LOCK_INFERENCE
+static bool get_inferred_num_lock_state(bool& state) {
+    uint64_t latest_timestamp = 0;
+    bool found = false;
+    for (auto const& [interface, filter] : num_lock_sync_filters) {
+        if (filter.inferred_num_lock_valid &&
+            (filter.inferred_num_lock_timestamp >= latest_timestamp)) {
+            state = filter.inferred_num_lock_state;
+            latest_timestamp = filter.inferred_num_lock_timestamp;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static bool physical_keypad_is_active() {
+    for (auto const& [interface, filter] : num_lock_sync_filters) {
+        for (auto const& [report_id, active] : filter.keypad_by_report) {
+            if (active) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void set_inferred_num_lock_state(
+    num_lock_sync_filter_t& filter, bool state, uint64_t timestamp) {
+    filter.inferred_num_lock_state = state;
+    filter.inferred_num_lock_valid = true;
+    filter.inferred_num_lock_timestamp = timestamp;
+}
+
+static void toggle_inferred_num_lock_state(
+    num_lock_sync_filter_t& filter, uint64_t timestamp) {
+    bool state = filter.inferred_num_lock_valid
+        ? !filter.inferred_num_lock_state
+        : true;
+    set_inferred_num_lock_state(filter, state, timestamp);
+}
+#endif
 
 static void queue_num_lock_state(num_lock_sync_filter_t& filter, bool state) {
     bool last_state = filter.pending_output_states.empty()
@@ -508,6 +725,10 @@ static void advance_num_lock_sync_timeout(num_lock_sync_filter_t& filter, uint64
             // The complete wrapper was not observed. Replay the withheld tap
             // as a coherent down/up pair on consecutive mapping frames.
             replay_first_num_lock_tap(filter);
+#ifndef STABLE_NUM_LOCK_INFERENCE
+            // A NumLock tap without a keypad event is a real physical toggle.
+            toggle_inferred_num_lock_state(filter, now);
+#endif
             filter.stage = NumLockSyncStage::IDLE;
             break;
         case NumLockSyncStage::TRAILING_DOWN:
@@ -535,6 +756,12 @@ static void observe_num_lock_sync_state(
             if (num_lock_down) {
                 filter.stage = NumLockSyncStage::FIRST_DOWN;
                 filter.deadline = now + NUM_LOCK_SYNC_EDGE_US;
+#ifndef STABLE_NUM_LOCK_INFERENCE
+            } else if (keypad_down) {
+                // A keypad/navigation event without the receiver's wrapper
+                // indicates that the physical NumLock state is OFF.
+                set_inferred_num_lock_state(filter, false, now);
+#endif
             }
             break;
         case NumLockSyncStage::FIRST_DOWN:
@@ -583,6 +810,9 @@ static void observe_num_lock_sync_state(
             if (num_lock_up) {
                 // Complete NumLock tap / Keypad tap / NumLock tap wrapper:
                 // discard both wrapper taps and leave the keypad event intact.
+#ifndef STABLE_NUM_LOCK_INFERENCE
+                set_inferred_num_lock_state(filter, true, now);
+#endif
                 filter.stage = NumLockSyncStage::IDLE;
                 filter.deadline = 0;
             }
@@ -649,6 +879,11 @@ static void remove_num_lock_sync_filters(uint8_t dev_addr) {
                 }
             }
         }
+#ifndef STABLE_NUM_LOCK_INFERENCE
+        if (it->second.has_num_lock_usage && (num_lock_source_count > 0)) {
+            num_lock_source_count--;
+        }
+#endif
         it = num_lock_sync_filters.erase(it);
     }
 }
@@ -1009,6 +1244,57 @@ bool differ_on_absolute(const uint8_t* report1, const uint8_t* report2, uint8_t 
     return false;
 }
 
+#ifdef MOUSE_PIPELINE_TRACE
+static bool mouse_pipeline_trace_report_xy(
+    uint8_t report_id, const uint8_t* report, uint8_t len, int16_t* x, int16_t* y) {
+    bool has_xy = false;
+    int32_t values[2] = { 0, 0 };
+    for (auto const& [usage, def] : our_usages[report_id]) {
+        if ((usage != 0x00010030) && (usage != 0x00010031)) {
+            continue;
+        }
+        int32_t value = get_bits(report, len, def.bitpos, def.size);
+        if (def.logical_minimum < 0) {
+            value = sign_extend_hid_value(value, def.size);
+        }
+        values[usage & 1] = value;
+        has_xy = true;
+    }
+    if (!has_xy) {
+        return false;
+    }
+    *x = (values[0] < -32768) ? -32768 : (values[0] > 32767) ? 32767 : (int16_t) values[0];
+    *y = (values[1] < -32768) ? -32768 : (values[1] > 32767) ? 32767 : (int16_t) values[1];
+    return true;
+}
+#endif
+
+#ifdef LEGACY_RELATIVE_AGGREGATION
+// Pre-c436 behavior: aggregate once and let the HID field truncate naturally.
+// Keep this byte-for-byte style separate from the guarded modern path below
+// so comparison builds do not inherit its overflow preflight.
+void aggregate_relative(uint8_t* prev_report, const uint8_t* report, uint8_t report_id) {
+    for (auto const& [usage, usage_def] : our_usages[report_id]) {
+        if (usage_def.is_relative) {
+            int32_t val1 = get_bits(report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
+            if (usage_def.logical_minimum < 0) {
+                if (val1 & (1 << (usage_def.size - 1))) {
+                    val1 |= 0xFFFFFFFF << usage_def.size;
+                }
+            }
+            if (val1) {
+                int32_t val2 = get_bits(prev_report, report_sizes[report_id], usage_def.bitpos, usage_def.size);
+                if (usage_def.logical_minimum < 0) {
+                    if (val2 & (1 << (usage_def.size - 1))) {
+                        val2 |= 0xFFFFFFFF << usage_def.size;
+                    }
+                }
+                put_bits(prev_report, report_sizes[report_id], usage_def.bitpos, usage_def.size, val1 + val2);
+            }
+        }
+    }
+}
+#else
 bool aggregate_relative(uint8_t* prev_report, const uint8_t* report, uint8_t report_id) {
     // Do not let a delayed run of signed relative reports wrap around inside
     // one HID field (for example, +100 + +100 becoming -56 in an 8-bit axis).
@@ -1046,6 +1332,7 @@ bool aggregate_relative(uint8_t* prev_report, const uint8_t* report, uint8_t rep
     }
     return true;
 }
+#endif
 
 static uint8_t dpad_table[16] = { 8, 6, 2, 8, 0, 7, 1, 0, 4, 5, 3, 4, 8, 6, 2, 8 };
 
@@ -1720,6 +2007,11 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+#ifdef ALT_NUMPAD_EQUALS
+    apply_num_lock_aware_keypad_output();
+    apply_alt_numpad_equals_chord();
+#endif
+
     for (unsigned int i = 0; i < report_ids.size(); i++) {  // XXX what order should we go in? maybe keyboard first so that mappings to ctrl-left click work as expected?
         uint8_t report_id = report_ids[i];
         if (our_descriptor->sanitize_report != nullptr) {
@@ -1735,16 +2027,43 @@ void process_mapping(bool auto_repeat) {
                 break;
             }
             uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
+#ifdef MOUSE_PIPELINE_TRACE
+            int16_t trace_x = 0;
+            int16_t trace_y = 0;
+            bool trace_mouse_report = mouse_pipeline_trace_report_xy(
+                report_id, reports[report_id], report_sizes[report_id], &trace_x, &trace_y);
+            if (trace_mouse_report) {
+                mouse_pipeline_trace_event(MousePipelineTraceEvent::A_MAPPING_OUTPUT, trace_x, trace_y,
+                                           report_sizes[report_id], or_items, report_id);
+            }
+#endif
             if ((or_items > 0) &&
                 (outgoing_reports[prev][0] == report_id) &&
-                !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id) &&
-                aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
+                !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)
+#ifndef LEGACY_RELATIVE_AGGREGATION
+                && aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
+#else
+                ) {
+                aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
+#endif
+#ifdef MOUSE_PIPELINE_TRACE
+                if (trace_mouse_report) {
+                    mouse_pipeline_trace_event(MousePipelineTraceEvent::A_QUEUE_AGGREGATE, trace_x, trace_y,
+                                               report_sizes[report_id], or_items, report_id);
+                }
+#endif
             } else {
                 outgoing_reports[or_tail][0] = report_id;
                 memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
                 memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
                 or_tail = (or_tail + 1) % OR_BUFSIZE;
                 or_items++;
+#ifdef MOUSE_PIPELINE_TRACE
+                if (trace_mouse_report) {
+                    mouse_pipeline_trace_event(MousePipelineTraceEvent::A_QUEUE_NEW, trace_x, trace_y,
+                                               report_sizes[report_id], or_items, report_id);
+                }
+#endif
             }
 #ifdef HID_HOST_DIAGNOSTICS
             hid_host_output_counters[5] += diagnostic_motion;
@@ -1775,6 +2094,12 @@ bool send_report(send_report_t do_send_report) {
     }
 
     uint8_t report_id = outgoing_reports[or_head][0];
+#ifdef MOUSE_PIPELINE_TRACE
+    int16_t trace_x = 0;
+    int16_t trace_y = 0;
+    bool trace_mouse_report = mouse_pipeline_trace_report_xy(
+        report_id, outgoing_reports[or_head] + 1, report_sizes[report_id], &trace_x, &trace_y);
+#endif
 
     bool sent = false;
     if (our_descriptor == &our_descriptors[our_descriptor_number]) {
@@ -1795,6 +2120,12 @@ bool send_report(send_report_t do_send_report) {
     // Keep the report queued while the interrupt endpoint is busy. Relative
     // mouse data would otherwise be discarded before TinyUSB transmits it.
     if (sent) {
+#ifdef MOUSE_PIPELINE_TRACE
+        if (trace_mouse_report) {
+            mouse_pipeline_trace_event(MousePipelineTraceEvent::A_USB_SEND_OK, trace_x, trace_y,
+                                       report_sizes[report_id], or_items, report_id);
+        }
+#endif
 #ifdef HID_HOST_DIAGNOSTICS
         hid_host_output_counters[6] += diagnostic_report_has_motion(report_id, outgoing_reports[or_head] + 1);
 #endif
@@ -1802,6 +2133,13 @@ bool send_report(send_report_t do_send_report) {
         or_items--;
         reports_sent++;
     }
+
+#ifdef MOUSE_PIPELINE_TRACE
+    else if (trace_mouse_report) {
+        mouse_pipeline_trace_event(MousePipelineTraceEvent::A_USB_SEND_BUSY, trace_x, trace_y,
+                                   report_sizes[report_id], or_items, report_id);
+    }
+#endif
 
     return sent;
 }
@@ -2252,6 +2590,12 @@ static const uint8_t* filter_num_lock_sync_report(
 
     auto& filter = num_lock_sync_filters[interface];
     if (defines_num_lock) {
+#ifndef STABLE_NUM_LOCK_INFERENCE
+        if (!filter.has_num_lock_usage) {
+            filter.has_num_lock_usage = true;
+            num_lock_source_count++;
+        }
+#endif
         filter.num_lock_by_report[report_id] = report_usage_active(report, len, usage_map, NUM_LOCK_USAGE);
     }
     if (defines_keypad) {
@@ -2314,6 +2658,32 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
             len--;
         }
     }
+
+#ifdef MOUSE_PIPELINE_TRACE
+    bool trace_has_xy = false;
+    int16_t trace_x = 0;
+    int16_t trace_y = 0;
+    for (auto const& [usage, def] : their_usages[interface][report_id]) {
+        if ((usage != 0x00010030) && (usage != 0x00010031)) {
+            continue;
+        }
+        int32_t value = get_bits(report, len, def.bitpos, def.size);
+        if ((def.logical_minimum < 0) || (def.logical_maximum < 0)) {
+            value = sign_extend_hid_value(value, def.size);
+        }
+        int16_t clamped = (value < -32768) ? -32768 : (value > 32767) ? 32767 : (int16_t) value;
+        if (usage == 0x00010030) {
+            trace_x = clamped;
+        } else {
+            trace_y = clamped;
+        }
+        trace_has_xy = true;
+    }
+    if (trace_has_xy) {
+        mouse_pipeline_trace_event(MousePipelineTraceEvent::A_DECODED_XY, trace_x, trace_y,
+                                   len, 0, interface);
+    }
+#endif
 
 #ifdef WBT2_BOOT_INTERFACES
     uint8_t filtered_report[MAX_REPORT_SIZE];

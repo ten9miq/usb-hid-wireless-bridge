@@ -552,6 +552,36 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
             do_queue_get_report(msg->report_id, msg->dev_addr, msg->interface, msg->len);
             break;
         }
+#ifdef MOUSE_PIPELINE_TRACE
+        case DualCommand::MOUSE_PIPELINE_TRACE_CONTROL: {
+            if (len != sizeof(mouse_pipeline_trace_control_t)) {
+                break;
+            }
+            const mouse_pipeline_trace_control_t* msg =
+                (const mouse_pipeline_trace_control_t*) data;
+            mouse_pipeline_trace_control(msg->action, msg->filter_dev_addr, msg->filter_instance);
+            break;
+        }
+        case DualCommand::MOUSE_PIPELINE_TRACE_REQUEST: {
+            if (len != sizeof(mouse_pipeline_trace_request_t)) {
+                break;
+            }
+            const mouse_pipeline_trace_request_t* request =
+                (const mouse_pipeline_trace_request_t*) data;
+            mouse_pipeline_trace_response_t response = {};
+            response.want_info = request->want_info;
+            if (request->want_info) {
+                mouse_pipeline_trace_get_info(&response.payload.info);
+                response.valid = 1;
+            } else {
+                response.valid = mouse_pipeline_trace_get_record(
+                    request->chronological_index, &response.payload.record);
+            }
+            // This is only reached by an explicit Feature report request.
+            serial_write_nonblocking((const uint8_t*) &response, sizeof(response));
+            break;
+        }
+#endif
         default:
             break;
     }
@@ -574,7 +604,14 @@ static bool send_hid_report(uint8_t dev_addr, uint8_t instance, uint8_t const* r
     msg->dev_addr = dev_addr;
     msg->interface = instance;
     memcpy(msg->report, report, len);
-    return serial_write_nonblocking((uint8_t*) msg, len + sizeof(report_received_t));
+    bool queued = serial_write_nonblocking((uint8_t*) msg, len + sizeof(report_received_t));
+#ifdef MOUSE_PIPELINE_TRACE
+    if (queued && mouse_pipeline_trace_matches_endpoint(dev_addr, instance)) {
+        mouse_pipeline_trace_event(MousePipelineTraceEvent::B_UART_QUEUED, 0, 0, len, 0,
+                                   ((uint32_t) dev_addr << 8) | instance);
+    }
+#endif
+    return queued;
 }
 
 static void flush_pending_hid_reports() {
@@ -659,6 +696,12 @@ int main() {
 void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
     activity_led_on();
 
+#ifdef MOUSE_PIPELINE_TRACE
+    if (mouse_pipeline_trace_matches_endpoint(dev_addr, instance)) {
+        mouse_pipeline_trace_raw_event(MousePipelineTraceEvent::B_USB_CALLBACK, report, len);
+    }
+#endif
+
 #ifdef HID_HOST_DIAGNOSTICS
     record_hid_host_report(dev_addr, instance, len);
 #endif
@@ -686,6 +729,12 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
         state->report_pending = true;
         state->len = len;
         memcpy(state->report, report, len);
+#ifdef MOUSE_PIPELINE_TRACE
+        if (mouse_pipeline_trace_matches_endpoint(dev_addr, instance)) {
+            mouse_pipeline_trace_event(MousePipelineTraceEvent::B_UART_PENDING, 0, 0, len, 1,
+                                       ((uint32_t) dev_addr << 8) | instance);
+        }
+#endif
     }
 }
 

@@ -53,14 +53,26 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
     0xA1, 0x00,                //   Collection (Physical)
     0x05, 0x09,                //     Usage Page (Button)
     0x19, 0x01,                //     Usage Minimum (Button 1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x29, 0x03,                //     Usage Maximum (Button 3)
+#else
     0x29, 0x05,                //     Usage Maximum (Button 5)
+#endif
     0x15, 0x00,                //     Logical Minimum (0)
     0x25, 0x01,                //     Logical Maximum (1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x95, 0x03,                //     Report Count (3)
+#else
     0x95, 0x05,                //     Report Count (5)
+#endif
     0x75, 0x01,                //     Report Size (1)
     0x81, 0x02,                //     Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x95, 0x01,                //     Report Count (1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x75, 0x05,                //     Report Size (5)
+#else
     0x75, 0x03,                //     Report Size (3)
+#endif
     0x81, 0x03,                //     Input (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x05, 0x01,                //     Usage Page (Generic Desktop Ctrls)
     0x09, 0x30,                //     Usage (X)
@@ -84,23 +96,41 @@ const uint8_t our_report_descriptor_kb_mouse[] = {
     0x09, 0xB6,                //   Usage (Scan Previous Track)
     0x09, 0xB7,                //   Usage (Stop)
     0x09, 0xCD,                //   Usage (Play/Pause)
+#ifndef STABLE_BOOT_KEYBOARD_DESCRIPTOR
     0x09, 0xB1,                //   Usage (Pause)
+#endif
     0x09, 0xE2,                //   Usage (Mute)
     0x09, 0xE9,                //   Usage (Volume Increment)
     0x09, 0xEA,                //   Usage (Volume Decrement)
+#ifndef STABLE_BOOT_KEYBOARD_DESCRIPTOR
     0x0A, 0x92, 0x01,          //   Usage (AL Calculator)
+#endif
+#ifndef STABLE_CONSUMER_DESCRIPTOR
     0x0A, 0x23, 0x02,          //   Usage (AC Home)
     0x0A, 0x8A, 0x01,          //   Usage (AL Email Reader)
     0x0A, 0x83, 0x01,          //   Usage (AL Consumer Control Configuration)
+#endif
     0x75, 0x01,                //   Report Size (1)
+#ifdef STABLE_BOOT_KEYBOARD_DESCRIPTOR
+    0x95, 0x07,                //   Report Count (7)
+#elif defined(STABLE_CONSUMER_DESCRIPTOR)
+    0x95, 0x09,                //   Report Count (9)
+#else
     0x95, 0x0C,                //   Report Count (12)
+#endif
     0x81, 0x02,                //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x05, 0x0B,                //   Usage Page (Telephony)
     0x09, 0x2F,                //   Usage (Phone Mute)
     0x95, 0x01,                //   Report Count (1)
     0x81, 0x02,                //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
+#ifndef STABLE_BOOT_KEYBOARD_DESCRIPTOR
+#ifdef STABLE_CONSUMER_DESCRIPTOR
+    0x95, 0x06,                //   Report Count (6)
+#else
     0x95, 0x03,                //   Report Count (3)
+#endif
     0x81, 0x03,                //   Input (Const,Var,Abs)
+#endif
     0xC0,                      // End Collection
 };
 
@@ -714,9 +744,17 @@ uint8_t const boot_kb_report_descriptor[] = {
     0x81, 0x03,        //   Input (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
     0x05, 0x07,        //   Usage Page (Kbrd/Keypad)
     0x19, 0x00,        //   Usage Minimum (0x00)
+#ifdef STABLE_BOOT_KEYBOARD_DESCRIPTOR
     0x29, 0x65,        //   Usage Maximum (Keyboard Application)
+#else
+    0x29, 0x91,        //   Usage Maximum (LANG2)
+#endif
     0x15, 0x00,        //   Logical Minimum (0)
+#ifdef STABLE_BOOT_KEYBOARD_DESCRIPTOR
     0x25, 0x65,        //   Logical Maximum (101)
+#else
+    0x26, 0x91, 0x00,  //   Logical Maximum (145)
+#endif
     0x75, 0x08,        //   Report Size (8)
     0x95, 0x06,        //   Report Count (6)
     0x81, 0x00,        //   Input (Data,Array,Abs,No Wrap,Linear,Preferred State,No Null Position)
@@ -746,14 +784,26 @@ const uint8_t boot_mouse_report_descriptor[] = {
     0xA1, 0x00,  //   Collection (Physical)
     0x05, 0x09,  //     Usage Page (Button)
     0x19, 0x01,  //     Usage Minimum (Button 1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x29, 0x03,  //     Usage Maximum (Button 3)
+#else
     0x29, 0x05,  //     Usage Maximum (Button 5)
+#endif
     0x15, 0x00,  //     Logical Minimum (0)
     0x25, 0x01,  //     Logical Maximum (1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x95, 0x03,  //     Report Count (3)
+#else
     0x95, 0x05,  //     Report Count (5)
+#endif
     0x75, 0x01,  //     Report Size (1)
     0x81, 0x02,  //     Input (Data,Var,Abs)
     0x95, 0x01,  //     Report Count (1)
+#ifdef STABLE_MOUSE_BUTTON_DESCRIPTOR
+    0x75, 0x05,  //     Report Size (5)
+#else
     0x75, 0x03,  //     Report Size (3)
+#endif
     0x81, 0x03,  //     Input (Const,Var,Abs)
     0x05, 0x01,  //     Usage Page (Generic Desktop)
     0x09, 0x30,  //     Usage (X)
@@ -778,6 +828,24 @@ const uint8_t consumer_report_descriptor[] = {
     0xA1, 0x01,  // Collection (Application)
     0x15, 0x00,  //   Logical Minimum (0)
     0x25, 0x01,  //   Logical Maximum (1)
+#ifdef STABLE_BOOT_KEYBOARD_DESCRIPTOR
+    // Exact c436-baseline consumer layout.  STABLE_CONSUMER_DESCRIPTOR alone
+    // retains its existing pre-media-expansion compatibility layout.
+    0x09, 0xB5,  //   Usage (Scan Next Track)
+    0x09, 0xB6,  //   Usage (Scan Previous Track)
+    0x09, 0xB7,  //   Usage (Stop)
+    0x09, 0xCD,  //   Usage (Play/Pause)
+    0x09, 0xE2,  //   Usage (Mute)
+    0x09, 0xE9,  //   Usage (Volume Increment)
+    0x09, 0xEA,  //   Usage (Volume Decrement)
+    0x75, 0x01,  //   Report Size (1)
+    0x95, 0x07,  //   Report Count (7)
+    0x81, 0x02,  //   Input (Data,Var,Abs)
+    0x05, 0x0B,  //   Usage Page (Telephony)
+    0x09, 0x2F,  //   Usage (Phone Mute)
+    0x95, 0x01,  //   Report Count (1)
+    0x81, 0x02,  //   Input (Data,Var,Abs)
+#else
     0x09, 0xB5,  //   Usage (Scan Next Track)
     0x09, 0xB6,  //   Usage (Scan Previous Track)
     0x09, 0xB7,  //   Usage (Stop)
@@ -787,18 +855,29 @@ const uint8_t consumer_report_descriptor[] = {
     0x09, 0xE9,  //   Usage (Volume Increment)
     0x09, 0xEA,  //   Usage (Volume Decrement)
     0x0A, 0x92, 0x01,  //   Usage (AL Calculator)
+#ifndef STABLE_CONSUMER_DESCRIPTOR
     0x0A, 0x23, 0x02,  //   Usage (AC Home)
     0x0A, 0x8A, 0x01,  //   Usage (AL Email Reader)
     0x0A, 0x83, 0x01,  //   Usage (AL Consumer Control Configuration)
+#endif
     0x75, 0x01,  //   Report Size (1)
+#ifdef STABLE_CONSUMER_DESCRIPTOR
+    0x95, 0x09,  //   Report Count (9)
+#else
     0x95, 0x0C,  //   Report Count (12)
+#endif
     0x81, 0x02,  //   Input (Data,Var,Abs)
     0x05, 0x0B,  //   Usage Page (Telephony)
     0x09, 0x2F,  //   Usage (Phone Mute)
     0x95, 0x01,  //   Report Count (1)
     0x81, 0x02,  //   Input (Data,Var,Abs)
+#ifdef STABLE_CONSUMER_DESCRIPTOR
+    0x95, 0x06,  //   Report Count (6)
+#else
     0x95, 0x03,  //   Report Count (3)
+#endif
     0x81, 0x03,  //   Input (Const,Var,Abs)
+#endif
     0xC0,        // End Collection
 };
 

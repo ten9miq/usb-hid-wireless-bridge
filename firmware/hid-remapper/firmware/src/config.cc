@@ -23,6 +23,36 @@ ConfigCommand last_config_command = ConfigCommand::NO_COMMAND;
 uint32_t requested_index = 0;
 uint32_t requested_secondary_index = 0;
 
+#ifdef MOUSE_PIPELINE_TRACE
+struct __attribute__((packed)) mouse_pipeline_trace_record_response_t {
+    uint8_t source;
+    uint8_t valid;
+    uint16_t chronological_index;
+    mouse_pipeline_trace_record_t record;
+};
+
+struct __attribute__((packed)) mouse_pipeline_trace_info_response_t {
+    uint8_t source;
+    uint8_t valid;
+    uint16_t reserved;
+    mouse_pipeline_trace_info_t info;
+};
+
+static_assert(sizeof(mouse_pipeline_trace_record_response_t) == 28, "trace Feature response exceeds config payload");
+static_assert(sizeof(mouse_pipeline_trace_info_response_t) == 24, "trace Feature response changed");
+static uint8_t requested_trace_source = (uint8_t) MousePipelineTraceSource::A;
+static uint16_t requested_trace_index = 0;
+
+static MousePipelineTraceAction trace_action_for_command(ConfigCommand command) {
+    switch (command) {
+        case ConfigCommand::MOUSE_PIPELINE_TRACE_CLEAR: return MousePipelineTraceAction::CLEAR;
+        case ConfigCommand::MOUSE_PIPELINE_TRACE_ARM: return MousePipelineTraceAction::ARM;
+        case ConfigCommand::MOUSE_PIPELINE_TRACE_MARK: return MousePipelineTraceAction::MARK;
+        default: return MousePipelineTraceAction::FREEZE;
+    }
+}
+#endif
+
 bool checksum_ok(const uint8_t* buffer, uint16_t data_size) {
     return crc32(buffer, data_size - 4) == ((crc32_t*) (buffer + data_size - 4))->crc32;
 }
@@ -943,6 +973,33 @@ uint16_t handle_get_report1(uint8_t report_id, uint8_t* buffer, uint16_t reqlen)
                 returned->return_code = persist_config_return_code;
                 break;
             }
+#ifdef MOUSE_PIPELINE_TRACE
+            case ConfigCommand::MOUSE_PIPELINE_TRACE_INFO: {
+                mouse_pipeline_trace_info_response_t* returned =
+                    (mouse_pipeline_trace_info_response_t*) config_buffer;
+                returned->source = requested_trace_source;
+                if (requested_trace_source == (uint8_t) MousePipelineTraceSource::A) {
+                    mouse_pipeline_trace_get_info(&returned->info);
+                    returned->valid = 1;
+                } else {
+                    returned->valid = mouse_pipeline_trace_remote_get_info(&returned->info);
+                }
+                break;
+            }
+            case ConfigCommand::MOUSE_PIPELINE_TRACE_RECORD: {
+                mouse_pipeline_trace_record_response_t* returned =
+                    (mouse_pipeline_trace_record_response_t*) config_buffer;
+                returned->source = requested_trace_source;
+                returned->chronological_index = requested_trace_index;
+                if (requested_trace_source == (uint8_t) MousePipelineTraceSource::A) {
+                    returned->valid = mouse_pipeline_trace_get_record(
+                        requested_trace_index, &returned->record);
+                } else {
+                    returned->valid = mouse_pipeline_trace_remote_get_record(&returned->record);
+                }
+                break;
+            }
+#endif
             default:
                 return 0;
         }
@@ -1025,6 +1082,31 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                 case ConfigCommand::FLASH_B_SIDE:
                     flash_b_side();
                     break;
+#ifdef MOUSE_PIPELINE_TRACE
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_CLEAR:
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_ARM:
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_MARK:
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_FREEZE: {
+                    MousePipelineTraceAction action = trace_action_for_command(config_buffer->command);
+                    uint8_t filter_dev_addr = config_buffer->data[0];
+                    uint8_t filter_instance = config_buffer->data[1];
+                    mouse_pipeline_trace_control(action, filter_dev_addr, filter_instance);
+                    mouse_pipeline_trace_remote_control(action, filter_dev_addr, filter_instance);
+                    break;
+                }
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_INFO:
+                case ConfigCommand::MOUSE_PIPELINE_TRACE_RECORD: {
+                    requested_trace_source = config_buffer->data[0];
+                    requested_trace_index = (uint16_t) config_buffer->data[1] |
+                        ((uint16_t) config_buffer->data[2] << 8);
+                    if (requested_trace_source == (uint8_t) MousePipelineTraceSource::B) {
+                        mouse_pipeline_trace_remote_request(
+                            config_buffer->command == ConfigCommand::MOUSE_PIPELINE_TRACE_INFO,
+                            requested_trace_index);
+                    }
+                    break;
+                }
+#endif
                 case ConfigCommand::CLEAR_MACROS:
                     my_mutex_enter(MutexId::MACROS);
                     for (int i = 0; i < NMACROS; i++) {

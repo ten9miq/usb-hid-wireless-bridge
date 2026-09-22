@@ -65,3 +65,11 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
 void umount_callback(uint8_t dev_addr, uint8_t instance);
 
 #endif
+
+#ifdef MOUSE_PIPELINE_TRACE
+#include "mouse_pipeline_trace.h"
+void mouse_pipeline_trace_remote_control(MousePipelineTraceAction action, uint8_t filter_dev_addr, uint8_t filter_instance);
+void mouse_pipeline_trace_remote_request(bool want_info, uint16_t chronological_index);
+bool mouse_pipeline_trace_remote_get_record(mouse_pipeline_trace_record_t* record);
+bool mouse_pipeline_trace_remote_get_info(mouse_pipeline_trace_info_t* info);
+#endif

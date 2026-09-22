@@ -29,6 +29,15 @@ static int64_t tick_timer_callback(alarm_id_t id, void* user_data) {
     return 0;
 }
 
+#ifdef MOUSE_PIPELINE_TRACE
+// B only sends these in response to an explicit Feature report request.  Keep
+// the latest reply on A so HID GET_REPORT never has to block on the UART.
+static mouse_pipeline_trace_record_t remote_trace_record = {};
+static mouse_pipeline_trace_info_t remote_trace_info = {};
+static bool remote_trace_record_valid = false;
+static bool remote_trace_info_valid = false;
+#endif
+
 #ifdef HID_HOST_DIAGNOSTICS
 static uint64_t next_hid_host_diagnostic_receive_report = 0;
 static const uint64_t HID_HOST_DIAGNOSTIC_RECEIVE_REPORT_US = 1000000;
@@ -247,6 +256,10 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
         }
         case DualCommand::REPORT_RECEIVED: {
             report_received_t* msg = (report_received_t*) data;
+#ifdef MOUSE_PIPELINE_TRACE
+            mouse_pipeline_trace_raw_event(MousePipelineTraceEvent::A_UART_RECEIVED, msg->report,
+                                           len - sizeof(report_received_t));
+#endif
 #ifdef HID_HOST_DIAGNOSTICS
             uint16_t report_length = len - sizeof(report_received_t);
             record_hid_host_report_received(msg->dev_addr, msg->interface, report_length);
@@ -278,6 +291,23 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
             ret = true;
             break;
         }
+#ifdef MOUSE_PIPELINE_TRACE
+        case DualCommand::MOUSE_PIPELINE_TRACE_RESPONSE: {
+            if (len != sizeof(mouse_pipeline_trace_response_t)) {
+                break;
+            }
+            const mouse_pipeline_trace_response_t* response =
+                (const mouse_pipeline_trace_response_t*) data;
+            if (response->want_info) {
+                remote_trace_info = response->payload.info;
+                remote_trace_info_valid = response->valid;
+            } else {
+                remote_trace_record = response->payload.record;
+                remote_trace_record_valid = response->valid;
+            }
+            break;
+        }
+#endif
         case DualCommand::REQUEST_B_INIT:
             send_b_init();
             break;
@@ -350,7 +380,20 @@ uint32_t get_gpio_valid_pins_mask() {
 }
 
 void read_report(bool* new_report, bool* tick) {
-    *new_report = serial_read(serial_callback);
+#ifndef DUAL_A_SERIAL_DRAIN_LIMIT
+#define DUAL_A_SERIAL_DRAIN_LIMIT 1
+#endif
+
+    bool any_input_report = false;
+    for (uint8_t i = 0; i < DUAL_A_SERIAL_DRAIN_LIMIT; i++) {
+        bool input_report = serial_read(serial_callback);
+        any_input_report |= input_report;
+        if (!input_report) {
+            break;
+        }
+    }
+
+    *new_report = any_input_report;
     *tick = get_and_clear_tick_pending();
 }
 
@@ -358,6 +401,45 @@ void interval_override_updated() {
     restart_t msg;
     serial_write((uint8_t*) &msg, sizeof(msg));
 }
+
+#ifdef MOUSE_PIPELINE_TRACE
+void mouse_pipeline_trace_remote_control(
+    MousePipelineTraceAction action, uint8_t filter_dev_addr, uint8_t filter_instance) {
+    mouse_pipeline_trace_control_t msg = {};
+    msg.action = action;
+    msg.filter_dev_addr = filter_dev_addr;
+    msg.filter_instance = filter_instance;
+    serial_write((const uint8_t*) &msg, sizeof(msg));
+}
+
+void mouse_pipeline_trace_remote_request(bool want_info, uint16_t chronological_index) {
+    mouse_pipeline_trace_request_t msg = {};
+    msg.want_info = want_info;
+    msg.chronological_index = chronological_index;
+    if (want_info) {
+        remote_trace_info_valid = false;
+    } else {
+        remote_trace_record_valid = false;
+    }
+    serial_write((const uint8_t*) &msg, sizeof(msg));
+}
+
+bool mouse_pipeline_trace_remote_get_record(mouse_pipeline_trace_record_t* record) {
+    if (!remote_trace_record_valid) {
+        return false;
+    }
+    *record = remote_trace_record;
+    return true;
+}
+
+bool mouse_pipeline_trace_remote_get_info(mouse_pipeline_trace_info_t* info) {
+    if (!remote_trace_info_valid) {
+        return false;
+    }
+    *info = remote_trace_info;
+    return true;
+}
+#endif
 
 bool swd_initialized = false;
 
