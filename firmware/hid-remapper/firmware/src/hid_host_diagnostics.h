@@ -39,7 +39,13 @@ enum class HidHostDiagnosticEvent : uint8_t {
     // B-side diagnostic UART transport health. This fixed payload distinguishes
     // a missing event-15/event-12 producer from B-to-A UART backpressure.
     B_DIAGNOSTIC_TRANSPORT = 16,
+    B_RUNTIME_IDENTITY = 17,
+    B_G700_ENDPOINT_HEALTH = 18,
+    B_FLASH_LOADER_STATUS = 19,
 };
+
+// A-side watchdog scratch registers survive the RAM B-loader's reboot.
+#define B_FLASH_LOADER_STATUS_MAGIC 0x34444848u // "HHD4"
 
 #define HID_HOST_DIAGNOSTIC_FLAG_SUCCESS 0x01
 #define HID_HOST_DIAGNOSTIC_FLAG_HAS_INPUT 0x02

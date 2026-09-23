@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 
 #include "adi.h"
@@ -40,6 +41,7 @@
 #define BOOT2_START         0x20020000
 #define STACK_ADDDR         0x20040800
 #define FLASH_BASE          0x10000000
+#define FLASH_PROGRAM_PAGE_SIZE 256
 
 static int flash_code_copied = 0;
 
@@ -69,14 +71,27 @@ static int rp2040_program_flash_chunk(int offset, int length) {
         flash_code_copied = 1;
     }
 
+    // The RP2040 ROM flash_range_program routine requires whole 256-byte
+    // pages. The final image chunk is usually not page-aligned; leave the
+    // bytes after the image erased rather than passing an invalid length.
+    int padded_length = (length + FLASH_PROGRAM_PAGE_SIZE - 1) &
+                        ~(FLASH_PROGRAM_PAGE_SIZE - 1);
+    if (padded_length != length) {
+        uint8_t padding[FLASH_PROGRAM_PAGE_SIZE];
+        memset(padding, 0xff, sizeof(padding));
+        rc = mem_write_block(DATA_BUFFER + length, padded_length - length, padding);
+        if (rc != SWD_OK) return rc;
+    }
+
     uint32_t t = time_us_32();
 
-    uint32_t args[] = { offset, DATA_BUFFER, length };
+    uint32_t args[] = { offset, DATA_BUFFER, padded_length };
     rc = rp2040_call_function(CODE_START, args, sizeof(args)/sizeof(uint32_t));
     if (rc != SWD_OK) return rc;
 
     uint32_t r0, erased, programmed;
     rc = reg_read(0, &r0);
+    if (rc != SWD_OK) return rc;
 
     erased = (r0 >> 24) * 4;
     programmed = r0 & 0x00ffffff;
@@ -111,7 +126,8 @@ int rp2040_add_flash_bit(uint32_t offset, const uint8_t *src, int size) {
 
     // If we are starting outside the range of an existing block...
     if (chunk_size && (offset >= (chunk_start + 65536))) {
-        rp2040_program_flash_chunk(chunk_start, chunk_size);
+        rc = rp2040_program_flash_chunk(chunk_start, chunk_size);
+        if (rc != SWD_OK) return rc;
         chunk_size = 0;
     }
 
@@ -144,7 +160,8 @@ int rp2040_add_flash_bit(uint32_t offset, const uint8_t *src, int size) {
 
         // If we have a full one...
         if (chunk_size == 65536) {
-            rp2040_program_flash_chunk(chunk_start, chunk_size);
+            rc = rp2040_program_flash_chunk(chunk_start, chunk_size);
+            if (rc != SWD_OK) return rc;
             chunk_size = 0;
         }
 
@@ -285,7 +302,6 @@ FOR_TARGET int flash_block(uint32_t offset, uint8_t *src, int length) {
 
     return rc;
 }
-
 
 
 

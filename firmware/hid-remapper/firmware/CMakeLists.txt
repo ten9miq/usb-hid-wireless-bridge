@@ -7,7 +7,9 @@ add_compile_definitions(PERSISTED_CONFIG_SIZE=4096)
 add_compile_definitions(PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
 
 set(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/pico-sdk")
-set(PICO_TINYUSB_PATH "${CMAKE_CURRENT_LIST_DIR}/tinyusb")
+if(NOT DEFINED PICO_TINYUSB_PATH)
+    set(PICO_TINYUSB_PATH "${CMAKE_CURRENT_LIST_DIR}/tinyusb")
+endif()
 set(PICO_PIO_USB_PATH "${CMAKE_CURRENT_LIST_DIR}/Pico-PIO-USB")
 set(PICO_BOARD_HEADER_DIRS "${CMAKE_CURRENT_LIST_DIR}/src/boards")
 
@@ -27,6 +29,9 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 # configuration interface.  Disabled by default so release firmware and its
 # descriptor remain unchanged.
 option(HID_HOST_DIAGNOSTICS "Enable dual A/B USB host diagnostic reports" OFF)
+option(HOST_QUEUE_CAPACITY_64 "Increase B-side USB host event queue to 64 entries" OFF)
+option(HOST_SOF_COALESCE "Keep at most one pending B-side SOF callback" OFF)
+option(HOST_ONE_HOT_FAIRNESS "Rotate one B-side interrupt endpoint per SOF" OFF)
 option(MOUSE_PIPELINE_TRACE "Enable frozen dual A/B mouse pipeline trace rings" OFF)
 option(ALT_NUMPAD_EQUALS "Translate RealForce Alt+Numpad6+Numpad1 to '='" OFF)
 option(STABLE_CONSUMER_DESCRIPTOR "Use the pre-media-expansion Consumer Control descriptor" OFF)
@@ -172,8 +177,18 @@ target_link_libraries(remapper_dual_a
 pico_generate_pio_header(remapper_dual_a ${CMAKE_CURRENT_LIST_DIR}/src/pico_debug/swd.pio)
 pico_add_extra_outputs(remapper_dual_a)
 
+set(DUAL_B_SOURCE_OVERRIDE "" CACHE FILEPATH
+    "Historical B application source for reproducibility checks")
+set(VERIFIED_B_BUILD_DATE "" CACHE STRING
+    "Optional Pico binary-info build date for historical B reproducibility")
+if(DUAL_B_SOURCE_OVERRIDE)
+    set(DUAL_B_SOURCE "${DUAL_B_SOURCE_OVERRIDE}")
+else()
+    set(DUAL_B_SOURCE src/remapper_dual_b.cc)
+endif()
+
 add_executable(remapper_dual_b
-    src/remapper_dual_b.cc
+    ${DUAL_B_SOURCE}
     src/crc.cc
     src/interval_override.cc
     src/serial.cc
@@ -182,6 +197,10 @@ add_executable(remapper_dual_b
     src/app_driver.cc
     src/xbox.cc
 )
+if(VERIFIED_B_BUILD_DATE)
+    target_compile_definitions(remapper_dual_b PRIVATE
+        "PICO_PROGRAM_BUILD_DATE=\"${VERIFIED_B_BUILD_DATE}\"")
+endif()
 target_include_directories(remapper_dual_b PRIVATE
     src
     src/tusb_config_host
@@ -191,6 +210,15 @@ if(HID_HOST_DIAGNOSTICS)
     # The pre-mount evidence is emitted from TinyUSB host internals, so the
     # host library must receive the diagnostic-only definition as well.
     target_compile_definitions(tinyusb_host INTERFACE HID_HOST_DIAGNOSTICS=1)
+endif()
+if(HOST_QUEUE_CAPACITY_64)
+    target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_TASK_QUEUE_SZ=64)
+endif()
+if(HOST_SOF_COALESCE)
+    target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_SOF_QUEUE_COALESCE=1)
+endif()
+if(HOST_ONE_HOT_FAIRNESS)
+    target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_ONE_HOT_FAIRNESS=1)
 endif()
 if(MOUSE_PIPELINE_TRACE)
     target_sources(remapper_dual_b PRIVATE src/mouse_pipeline_trace.cc)

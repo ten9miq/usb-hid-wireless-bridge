@@ -2,7 +2,26 @@
 
 最終更新: 2026-09-23
 
-## 動作確認済みの基準
+## 現時点の最安定運用版（2026-09-23）
+
+`firmware/artifacts/remapper_dual_combined-verified-a-g700-queue64-only-candidate.uf2`
+（SHA-256 `8BC16D3D69B0ECD2149AC03A50E4256EB67357439FB081CE4DEF09E0AD6F6DD3`）を
+現在の実機運用・復元用の**最安定版**として固定する。A側Flashは下記の従来版と
+バイト単位で同じであり、実行B側のUSBホストイベントキュー容量だけを
+16件から64件へ増やした。SOF通知集約と一つずつのエンドポイント公平化は無効。
+
+実機ではRollerMouseとG700sの両方が動作し、RollerMouse移動→停止で
+位置跳びなし。HID-RemapperのUSB切断・接続10回でG700s完全停止は0回。
+ユーザーは通常のキーボード入力も問題なさそうと報告し、この試験中に
+HID Remapper Configurationの`Flash B Side`を押していないことを確認した。
+起動直後のG700sの遅延は残るが、完全停止しなければ許容するという判断である。
+上段数字・NumLock ON/OFFのテンキー・`=`・JISキーを個別に列挙した結果は
+未記録であり、10回で0回という結果は低頻度停止の根絶を証明しない。
+したがって「現在最も安定して使えた版」と「全項目のリリース検証完了」は分ける。
+この版のAに埋め込まれた旧Bを`Flash B Side`で書くと実行Bが変わるため、
+通常運用や本版の再現試験ではその操作を行わない。復元にはこの結合UF2を用いる。
+
+## 従来の動作確認済み復元基準
 
 `firmware/artifacts/remapper_dual_combined-current-features-historical-embedded-b-ab.uf2`
 （SHA-256 `C144E09826BB9EBF63C989E08C0EEE983A7B5A7ACB63E729D3FD62686F05EAC2`）を
@@ -133,6 +152,13 @@ Aに埋め込まれた48,644バイトBを実行Bと取り違えない。
 復元作業の成功判定は書き込み完了だけではなく、A/Bの実機確認で行う。
 この基準はRollerMouse位置跳び対策の復元点であり、G700s完全停止が
 解消した完成版ではない。
+
+この旧版と新しい最安定運用版は異なるB側実行イメージを含む。
+新しい版は`tools/verify-g700-queue-candidate.py`でA同一性、B実行イメージ、
+UF2のRAM段、ビルドoptionを検査した。2026-09-23に`G:\INFO_UF2.TXT`でRP2を
+確認して書き込み、Gドライブ消失とWindowsでの`VID_213F:PID_1109`列挙を
+確認した。実機結果と未確認項目は本書冒頭の最安定運用版の節に記録する。
+新しい版で回帰が出た場合でも、旧版combined UF2は変更せず復元可能に保つ。
 
 ## 実機試験の記録欄
 

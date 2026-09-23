@@ -20,6 +20,18 @@
 #define CFG_TUH_HID_EPIN_BUFSIZE 64
 #define CFG_TUH_HID_EPOUT_BUFSIZE 64
 
+// Keep the verified host scheduling by default. Controlled queue/SOF
+// experiments are selected through firmware CMake options.
+#ifndef CFG_TUH_TASK_QUEUE_SZ
+#define CFG_TUH_TASK_QUEUE_SZ 16
+#endif
+#ifndef CFG_TUH_SOF_QUEUE_COALESCE
+#define CFG_TUH_SOF_QUEUE_COALESCE 0
+#endif
+#ifndef CFG_TUH_ONE_HOT_FAIRNESS
+#define CFG_TUH_ONE_HOT_FAIRNESS 0
+#endif
+
 // Output and feature reports use HID control transfers in HID Remapper.  Do
 // not spend one of RP2040's 15 host endpoint slots on unused interrupt OUT.
 #define CFG_TUH_HID_OPEN_OUT_ENDPOINT 0

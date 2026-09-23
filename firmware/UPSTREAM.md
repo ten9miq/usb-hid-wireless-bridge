@@ -25,6 +25,22 @@ patches in this order: `tinyusb-rp2040-hid-endpoint-capacity.patch`,
 The snapshot patch still requires `tinyusb-host-enumeration-diagnostics.patch`
 before the RP2040 sequence.
 
+The 2026-09-23 G700s queue64 best-stable trial deliberately omits the final
+fairness patch. Its TinyUSB source is the pinned TinyUSB Git revision plus,
+in order, the enumeration, endpoint-capacity, EPX-race, and HCD-snapshot
+patches above. This four-patch sequence was re-applied to a clean archive and
+the relevant source files matched the independently reconstructed build.
+Build B with `DUAL_B_SOURCE_OVERRIDE` pointing to
+`src/remapper_dual_b_verified_20260919.cc`,
+`VERIFIED_B_BUILD_DATE=Sep 19 2026`, `HOST_QUEUE_CAPACITY_64=ON`,
+`HOST_SOF_COALESCE=OFF`, `HOST_ONE_HOT_FAIRNESS=OFF`, and diagnostics OFF.
+With the queue option OFF, the B BIN must first reproduce SHA-256
+`9D77CC7378FCEB10F692338198DB1F4682412A0E48028E81126FBF0C761B8219`;
+with only the queue option ON it must produce SHA-256
+`7DB4B42D476825F6E0296E16B60BE66D64E6558BA312E95A4F152FEE3C206D12`.
+The release artifact and its hardware-test limits are recorded in
+`docs/firmware-release-policy.md`.
+
 ## A/B scope
 
 - Keep the existing two-interface USB configuration unchanged: the remapped
