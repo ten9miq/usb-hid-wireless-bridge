@@ -7,3 +7,27 @@
 /firmware/hid-remapper/firmware/Pico-PIO-USB/
 /firmware/hid-remapper/firmware/usb_midi_host/
 /firmware/hid-remapper/firmware/build*/
+
+# Superseded one-off diagnostic installers and failed trial UF2s. Keep the
+# files locally for investigation; validated combined/rollback UF2s are tracked.
+/firmware/artifacts/flash_b_side-g700-hhd3-compact-health.uf2
+/firmware/artifacts/flash_b_side-g700-hhd3-page-aligned.uf2
+/firmware/artifacts/flash_b_side-g700-hhd4-loader-readback.uf2
+/firmware/artifacts/remapper_dual_a-hhd4-pinned-embedded-b-restore.uf2
+/firmware/artifacts/remapper_dual_a-hhd5-pinned-embedded-b-restore.uf2
+/firmware/artifacts/remapper_dual_a-temporary-hhd4-embedded-b-webui-flash.uf2
+/firmware/artifacts/remapper_dual_a-temporary-hhd5-queue-coalesced-embedded-b.uf2
+/firmware/artifacts/remapper_dual_a-temporary-restore-verified-runtime-b.uf2
+/firmware/artifacts/remapper_dual_a-temporary-sof-coalesce-production-b-installer.uf2
+/firmware/artifacts/remapper_dual_combined-current-a-full-b-runtime-ab.uf2
+/firmware/artifacts/remapper_dual_combined-current-a-newer-b-runtime-ab.uf2
+/firmware/artifacts/remapper_dual_combined-g700-hhd3-compact-health.uf2
+/firmware/artifacts/remapper_dual_combined-g700-hhd4-loader-readback.uf2
+/firmware/artifacts/remapper_dual_combined-g700-startup-diagnostics.uf2
+/firmware/artifacts/remapper_dual_combined-temporary-hhd4-embedded-b-webui-flash.uf2
+/firmware/artifacts/remapper_dual_combined-wbt2-numeric-23ub-numlock-suppressed-test.uf2
+/firmware/artifacts/remapper_dual_combined-wbt2-numeric-23ub-output-numlock-suppressed-test.uf2
+/firmware/artifacts/remapper_dual_combined-wbt2-numeric-priority-test.uf2
+
+# Generated Python bytecode, not diagnostic evidence.
+/tools/__pycache__/
