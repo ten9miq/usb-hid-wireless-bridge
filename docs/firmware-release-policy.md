@@ -89,6 +89,51 @@ combined UF2、最新A側BIN、同じbuildのCMakeCacheへ置き換える。
 意図的に変更する場合は、変更理由と新しい実機A/B結果を記録してから、
 この文書と検査スクリプトの基準を更新する。
 
+### G700s停止対策のA専用復旧手順（試験中）
+
+`tools/verify-firmware-release.py extract-a-uf2 <出力先>`は、上記の
+SHA-256検証済みcombined UF2から、A側のFlashブロックだけを抽出する。
+UF2の総ブロック数だけをA単独書き込み用に直し、Flash payload自体は変更しない。
+生成済みの`firmware/artifacts/remapper_dual_a-verified-stable-only.uf2`
+（SHA-256 `0D6C9595554DC82B9391B1A7F1AE7F7504B9B783E878BD209053FC511FA61E7C`）
+がその復旧用Aである。
+
+同じcombined UF2のA埋込みBは48,644バイトだが、実行されたBは
+別の48,332バイトである。安定版のA/B組合せを正確に復旧する場合、
+`tools/verify-firmware-release.py extract-runtime-b-hex <出力先>`で
+B側RAM書き込み段に含まれる実行イメージを抽出し、SHA-256
+`9D77CC7378FCEB10F692338198DB1F4682412A0E48028E81126FBF0C761B8219`
+を検証する。A埋込みBをそのまま`FLASH_B_SIDE`しても、実行Bの
+正確な復元にはならない。
+
+新B候補をA側の一時イメージから設定コマンド`FLASH_B_SIDE`で書いた場合は、
+B Flashの読み戻し一致と、A専用復旧後の実機動作を別々に記録する。
+A専用復旧はB側Flashを書き換えない。ただし復旧後のAに埋め込まれるのは
+上記の歴史的Bであるため、以後`FLASH_B_SIDE`を実行すると新B候補が旧Bへ
+戻る。新B候補の正式採用までは、基準combined UF2とそのrelease gateを
+変更しない。
+
+2026-09-23の48,980バイト通常用B候補（ホストキュー64件＋SOF通知集約）は、
+検証済みAとの組合せでRollerMouse位置跳びを再発させたため不採用とする。
+その後、上記`extract-runtime-b-hex`による48,332バイトBの書き込み・
+読み戻し一致と、検証済みA専用UF2の再書き込みを行った。
+復旧後の実機確認では、RollerMouseの移動→停止10回で位置跳びは0回だった。
+一方、G700sはHID-Remapper接続後に2回、完全に動かなくなった。
+したがってRollerMouseの回帰は解消したが、G700s停止対策は未達である。
+この2件を同じ「位置跳び」として数えない。
+
+### 2026-09-23時点の復元基準
+
+現在の実機は、上記48,332バイトの実行Bと、検証済みA専用UF2から復元した
+Aの組合せである。以後の実験前には、Git管理済みの基準combined UF2
+（SHA-256 `C144E09826BB9EBF63C989E08C0EEE983A7B5A7ACB63E729D3FD62686F05EAC2`）
+を保全する。この結合UF2はAのFlash段と実行BのRAM段を含み、
+個別復元にはA専用UF2と`extract-runtime-b-hex`で得る実行Bを用いる。
+Aに埋め込まれた48,644バイトBを実行Bと取り違えない。
+復元作業の成功判定は書き込み完了だけではなく、A/Bの実機確認で行う。
+この基準はRollerMouse位置跳び対策の復元点であり、G700s完全停止が
+解消した完成版ではない。
+
 ## 実機試験の記録欄
 
 候補ごとに以下を保存する。失敗した試験と未実施の試験は区別する。

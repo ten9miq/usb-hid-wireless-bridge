@@ -15,6 +15,9 @@ EMBEDDED_B_ADDRESS = 0x1002ACD0  # dual_b_binary in the verified A-side image
 EMBEDDED_B_LENGTH = 48644
 EMBEDDED_B_SHA256 = "ad90682d9b0af74dc5bd8aa47c00874ad69158980d8d4b433e58aa06aa01d4e4"
 RUNTIME_B_SHA256 = "03639d06680176ae07e403f29704805b32eaf69f7738ad5337fb8c02c5821c4e"
+RUNTIME_B_BINARY_OFFSET = 23352  # B binary within the verified RAM flash loader
+RUNTIME_B_BINARY_LENGTH = 48332
+RUNTIME_B_BINARY_SHA256 = "9d77cc7378fceb10f692338198db1f4682412a0e48028e81126fbf0c761b8219"
 MAGIC = (0x0A324655, 0x9E5D5157, 0x0AB16F30)
 RELEASE_CACHE = {
     "PICO_BOARD": "remapper_v7",
@@ -133,6 +136,62 @@ def extract_b_uf2(output: Path) -> None:
     print(f"extracted pinned flash_b_side.uf2: {output} (SHA256 {sha256(ram_blocks)})")
 
 
+def extract_runtime_b_hex(output: Path) -> None:
+    _, ram_blocks = parse_combined(checked_reference())
+    if sha256(ram_blocks) != RUNTIME_B_SHA256:
+        raise ValueError("B RAM stage in the verified reference is inconsistent")
+    payload = b"".join(
+        ram_blocks[offset + 32 : offset + 288]
+        for offset in range(0, len(ram_blocks), 512)
+    )
+    blob = payload[RUNTIME_B_BINARY_OFFSET : RUNTIME_B_BINARY_OFFSET + RUNTIME_B_BINARY_LENGTH]
+    if len(blob) != RUNTIME_B_BINARY_LENGTH or sha256(blob) != RUNTIME_B_BINARY_SHA256:
+        raise ValueError("running B image in the verified reference is inconsistent")
+    lines = []
+    previous_upper = None
+    for offset in range(0, len(blob), 16):
+        address = 0x10000000 + offset
+        upper = address >> 16
+        if upper != previous_upper:
+            lines.append(hex_record(0, 4, upper.to_bytes(2, "big")))
+            previous_upper = upper
+        lines.append(hex_record(address & 0xFFFF, 0, blob[offset : offset + 16]))
+    lines.append(hex_record(0, 1, b""))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    print(f"extracted verified running B HEX: {output} "
+          f"({len(blob)} bytes, SHA256 {sha256(blob)})")
+
+
+def extract_a_uf2(output: Path) -> None:
+    reference = checked_reference()
+    image, _ = parse_combined(reference)
+    blocks = []
+    saw_ram = False
+    for offset in range(0, len(reference), 512):
+        block = bytearray(reference[offset : offset + 512])
+        address = struct.unpack_from("<I", block, 12)[0]
+        if 0x20000000 <= address < 0x21000000:
+            saw_ram = True
+            continue
+        if saw_ram:
+            raise ValueError("A flash block appears after B RAM stage")
+        blocks.append(block)
+
+    if len(blocks) * 256 != len(image):
+        raise ValueError("A flash block count differs from verified image")
+    for index, block in enumerate(blocks):
+        if struct.unpack_from("<II", block, 12) != (0x10000000 + index * 256, 256):
+            raise ValueError(f"unexpected A flash block order at {index}")
+        struct.pack_into("<II", block, 20, index, len(blocks))
+
+    uf2 = b"".join(blocks)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(uf2)
+    print(f"extracted verified A-only UF2: {output} "
+          f"({len(blocks)} blocks, SHA256 {sha256(uf2)})")
+
+
 def verify(combined: Path, a_bin: Path, cache: Path) -> None:
     golden_b = pinned_embedded_b()
     check_cache(cache)
@@ -157,6 +216,10 @@ def main() -> None:
     extract.add_argument("output", type=Path)
     extract_ram = sub.add_parser("extract-b-uf2", help="recreate the pinned flash_b_side.uf2")
     extract_ram.add_argument("output", type=Path)
+    extract_running_b = sub.add_parser("extract-runtime-b-hex", help="recreate the verified running B HEX")
+    extract_running_b.add_argument("output", type=Path)
+    extract_a = sub.add_parser("extract-a-uf2", help="recreate the verified A-only UF2")
+    extract_a.add_argument("output", type=Path)
     check = sub.add_parser("verify", help="verify a candidate combined UF2 before flashing")
     check.add_argument("--combined", required=True, type=Path)
     check.add_argument("--a-bin", required=True, type=Path)
@@ -166,6 +229,10 @@ def main() -> None:
         extract_hex(args.output)
     elif args.command == "extract-b-uf2":
         extract_b_uf2(args.output)
+    elif args.command == "extract-runtime-b-hex":
+        extract_runtime_b_hex(args.output)
+    elif args.command == "extract-a-uf2":
+        extract_a_uf2(args.output)
     else:
         verify(args.combined, args.a_bin, args.cmake_cache)
 
