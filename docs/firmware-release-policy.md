@@ -21,6 +21,24 @@ HID Remapper Configurationの`Flash B Side`を押していないことを確認�
 この版のAに埋め込まれた旧Bを`Flash B Side`で書くと実行Bが変わるため、
 通常運用や本版の再現試験ではその操作を行わない。復元にはこの結合UF2を用いる。
 
+## 未解決課題: A側の埋込みBと実行Bを一致させる
+
+状態: **未着手。現在の最安定運用版は変更しない。** 現在A側に埋め込まれている
+Bイメージは従来の48,644バイト版、結合UF2のRAM書き込み段がB側へ入れるのは
+キュー64件の48,332バイト版である。通常動作では後者が使われるが、
+HID Remapper Configurationの`Flash B Side`を押すと前者でB側が上書きされる。
+これが操作ミスや2台の構成差を生む保守上の課題である。
+
+将来の整理では、Aに埋め込むBをキュー64件版と揃え、`Flash B Side`後も
+同じ実行Bになる候補を**別名UF2**で作る。ただしA側イメージも変化するため、
+現行版のRollerMouse位置跳びなしという実機結果を流用しない。
+descriptor・マウスレポート・Mappingなど、埋込みB以外の変更は同時に行わない。
+候補のB実行イメージとA埋込みBの一致を静的検査し、HID-Remapper直結で
+RollerMouse移動→停止10回以上、G700sを接続したままUSB再接続10回以上、
+RealForce通常キー・上段数字・NumLock ON/OFFテンキー・`=`・JISキーを
+それぞれ実機確認する。低頻度停止は10回だけで根絶を証明できない点も記録する。
+失敗時は本書冒頭の最安定運用版（SHA-256 `8BC16D3D69B0ECD2149AC03A50E4256EB67357439FB081CE4DEF09E0AD6F6DD3`）へ戻す。
+
 ## 従来の動作確認済み復元基準
 
 `firmware/artifacts/remapper_dual_combined-current-features-historical-embedded-b-ab.uf2`
