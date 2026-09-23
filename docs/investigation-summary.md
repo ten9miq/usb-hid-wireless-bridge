@@ -20,7 +20,7 @@
 
 ## バックアップと利用ツール
 
-書き換え前の購入時状態は `backups/backups-20260913-160849/` に保存済みです。
+書き換え前の購入時状態は `backups/backups_20260913_160849/` に保存済みです。
 
 - RP2040 情報: `hid-remapper-v5.1-original-info.txt`
 - Flash 全域: `hid-remapper-v5.1-original.uf2` と `hid-remapper-v5.1-original.bin`

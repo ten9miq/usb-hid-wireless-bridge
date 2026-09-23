@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$OutputDirectory = (Join-Path (Get-Location) 'backups')
+    [string]$OutputDirectory = (Join-Path (Join-Path (Get-Location) 'backups') ('backups_' + (Get-Date -Format 'yyyyMMdd_HHmmss')))
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +16,10 @@ if ($null -eq $picotool) {
     throw 'tools\picotool\picotool.exe または PATH 上の picotool が見つかりません。'
 }
 
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+if (Test-Path -LiteralPath $OutputDirectory) {
+    throw "バックアップ先は既に存在します: $OutputDirectory"
+}
+New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $prefix = Join-Path $OutputDirectory 'hid-remapper-v5.1-original'
 
 & $picotool.FullName info -a | Tee-Object -FilePath "$prefix-info.txt"
