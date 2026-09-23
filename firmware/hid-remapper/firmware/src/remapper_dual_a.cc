@@ -2,6 +2,9 @@
 #include <cstring>
 
 #include "pico/time.h"
+#ifdef HID_HOST_DIAGNOSTICS
+#include "hardware/structs/watchdog.h"
+#endif
 
 #include "descriptor_parser.h"
 #include "dual.h"
@@ -56,6 +59,52 @@ static hid_host_diagnostic_t latest_hid_host_hcd_snapshot = {};
 static bool hid_host_hcd_snapshot_valid = false;
 static hid_host_diagnostic_t latest_hid_host_diagnostic_transport_snapshot = {};
 static bool hid_host_diagnostic_transport_snapshot_valid = false;
+static uint8_t b_diagnostic_runtime_version = 0;
+static hid_host_diagnostic_t latest_b_g700_health = {};
+static bool b_g700_health_valid = false;
+static bool b_flash_loader_status_valid = false;
+static uint32_t b_flash_loader_phase = 0;
+static uint32_t b_flash_loader_detail = 0;
+static uint32_t b_flash_loader_image_length = 0;
+static uint8_t b_flash_loader_status_source = 0;
+
+static void set_b_flash_status(uint32_t phase, uint32_t detail = 0) {
+    b_flash_loader_status_valid = true;
+    b_flash_loader_phase = phase;
+    b_flash_loader_detail = detail;
+    b_flash_loader_image_length = dual_b_binary_length;
+    b_flash_loader_status_source = 1; // WebUI FLASH_B_SIDE command
+}
+
+bool make_b_runtime_identity_snapshot(hid_host_diagnostic_t* snapshot) {
+    *snapshot = {};
+    snapshot->event = HidHostDiagnosticEvent::B_RUNTIME_IDENTITY;
+    snapshot->flags = b_diagnostic_runtime_version ? HID_HOST_DIAGNOSTIC_FLAG_SUCCESS : 0;
+    snapshot->report_length = dual_b_binary_length;
+    snapshot->report_bytes_length = 1;
+    snapshot->report_bytes[0] = b_diagnostic_runtime_version;
+    return true;
+}
+
+bool make_b_g700_health_snapshot(hid_host_diagnostic_t* snapshot) {
+    if (!b_g700_health_valid) return false;
+    *snapshot = latest_b_g700_health;
+    return true;
+}
+
+bool make_b_flash_loader_status_snapshot(hid_host_diagnostic_t* snapshot) {
+    *snapshot = {};
+    snapshot->event = HidHostDiagnosticEvent::B_FLASH_LOADER_STATUS;
+    snapshot->flags = b_flash_loader_status_valid && b_flash_loader_phase == 5
+        ? HID_HOST_DIAGNOSTIC_FLAG_SUCCESS : 0;
+    snapshot->report_length = b_flash_loader_image_length;
+    snapshot->report_bytes_length = 8;
+    memcpy(snapshot->report_bytes, &b_flash_loader_phase, sizeof(b_flash_loader_phase));
+    memcpy(snapshot->report_bytes + 4, &b_flash_loader_detail, sizeof(b_flash_loader_detail));
+    snapshot->report_descriptor_bytes_length = 1;
+    snapshot->report_descriptor_bytes[0] = b_flash_loader_status_source;
+    return true;
+}
 
 static hid_host_diagnostic_t* find_hid_host_diagnostic_context(uint8_t dev_addr, uint8_t instance) {
     for (uint8_t i = 0; i < HID_HOST_DIAGNOSTIC_CONTEXT_COUNT; i++) {
@@ -309,8 +358,37 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
         }
 #endif
         case DualCommand::REQUEST_B_INIT:
+#ifdef HID_HOST_DIAGNOSTICS
+            if (len == 5 && data[1] == 'H' && data[2] == 'H' &&
+                data[3] == 'D' && (data[4] == '3' || data[4] == '5')) {
+                b_diagnostic_runtime_version = data[4] - '0';
+            }
+#endif
             send_b_init();
             break;
+#ifdef HID_HOST_DIAGNOSTICS
+        case DualCommand::B_G700_HEALTH:
+            if (len == sizeof(dual_b_g700_health_t)) {
+                const dual_b_g700_health_t* probe = (const dual_b_g700_health_t*) data;
+                hid_host_diagnostic_t snapshot = {};
+                snapshot.event = HidHostDiagnosticEvent::B_G700_ENDPOINT_HEALTH;
+                snapshot.flags = probe->dev_addr ? HID_HOST_DIAGNOSTIC_FLAG_SUCCESS : 0;
+                snapshot.dev_addr = probe->dev_addr;
+                snapshot.instance = probe->instance;
+                snapshot.vid = 0x046d;
+                snapshot.pid = 0xc07c;
+                snapshot.report_length = probe->flags;
+                snapshot.report_bytes_length = 8;
+                memcpy(snapshot.report_bytes, &probe->callbacks, sizeof(probe->callbacks));
+                memcpy(snapshot.report_bytes + 4, &probe->arms, sizeof(probe->arms));
+                snapshot.report_descriptor_bytes_length = 4;
+                memcpy(snapshot.report_descriptor_bytes, &probe->arm_failures,
+                       sizeof(probe->arm_failures));
+                latest_b_g700_health = snapshot;
+                b_g700_health_valid = true;
+            }
+            break;
+#endif
         case DualCommand::START_OF_FRAME:
             add_alarm_in_us(300, tick_timer_callback, NULL, true);
             break;
@@ -360,6 +438,16 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
 }
 
 void extra_init() {
+#ifdef HID_HOST_DIAGNOSTICS
+    b_flash_loader_status_valid = watchdog_hw->scratch[0] == B_FLASH_LOADER_STATUS_MAGIC;
+    if (b_flash_loader_status_valid) {
+        b_flash_loader_phase = watchdog_hw->scratch[1];
+        b_flash_loader_detail = watchdog_hw->scratch[2];
+        b_flash_loader_image_length = watchdog_hw->scratch[3];
+        b_flash_loader_status_source = 2; // RAM flash loader status
+        watchdog_hw->scratch[0] = 0;
+    }
+#endif
     serial_init();
 }
 
@@ -444,20 +532,72 @@ bool mouse_pipeline_trace_remote_get_info(mouse_pipeline_trace_info_t* info) {
 bool swd_initialized = false;
 
 void flash_b_side() {
+#ifdef HID_HOST_DIAGNOSTICS
+    set_b_flash_status(1);
+#endif
+    int rc = SWD_OK;
     if (!swd_initialized) {
-        printf("swd_init: %d\n", swd_init());
+        rc = swd_init();
+        if (rc != SWD_OK) {
+#ifdef HID_HOST_DIAGNOSTICS
+            set_b_flash_status(2, rc);
+#endif
+            return;
+        }
         swd_initialized = true;
     }
-    printf("dp_init: %d\n", dp_init());
+    rc = dp_init();
+    if (rc != SWD_OK) {
+#ifdef HID_HOST_DIAGNOSTICS
+        set_b_flash_status(2, rc);
+#endif
+        return;
+    }
 
-    core_select(0);
-    core_reset_halt();
-    core_select(1);
-    core_reset_halt();
-    core_select(0);
+    rc = core_select(0);
+    if (rc == SWD_OK) rc = core_reset_halt();
+    if (rc == SWD_OK) rc = core_select(1);
+    if (rc == SWD_OK) rc = core_reset_halt();
+    if (rc == SWD_OK) rc = core_select(0);
+    if (rc != SWD_OK) {
+#ifdef HID_HOST_DIAGNOSTICS
+        set_b_flash_status(2, rc);
+#endif
+        return;
+    }
 
-    rp2040_add_flash_bit(0, dual_b_binary, dual_b_binary_length);
-    rp2040_add_flash_bit(0xffffffff, NULL, 0);
+#ifdef HID_HOST_DIAGNOSTICS
+    set_b_flash_status(3);
+#endif
+    rc = rp2040_add_flash_bit(0, dual_b_binary, dual_b_binary_length);
+    if (rc == SWD_OK) rc = rp2040_add_flash_bit(0xffffffff, NULL, 0);
+    if (rc != SWD_OK) {
+#ifdef HID_HOST_DIAGNOSTICS
+        set_b_flash_status(3, rc);
+#endif
+        return;
+    }
+
+#ifdef HID_HOST_DIAGNOSTICS
+    set_b_flash_status(4);
+    uint8_t readback[256];
+    for (uint32_t offset = 0; offset < dual_b_binary_length; offset += sizeof(readback)) {
+        uint32_t count = dual_b_binary_length - offset;
+        if (count > sizeof(readback)) count = sizeof(readback);
+        rc = mem_read_block(0x10000000u + offset, count, readback);
+        if (rc != SWD_OK) {
+            set_b_flash_status(4, 0x80000000u | static_cast<uint32_t>(rc));
+            return;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (readback[i] != dual_b_binary[offset + i]) {
+                set_b_flash_status(4, offset + i);
+                return;
+            }
+        }
+    }
+    set_b_flash_status(5);
+#endif
 }
 
 uint8_t buffer[64 + sizeof(send_out_report_t)];

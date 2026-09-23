@@ -401,6 +401,298 @@ full release regression gate open. On this evidence the user designated the
 flashed queue64-only image the current best stable operational version.
 The older verified combined UF2 remains available as a separate rollback.
 
+On 2026-09-24, the second HID-Remapper running the restored queue64-only
+combined UF2 was reported to have frequent keyboard and wired G700s stops,
+while RollerMouse kept moving without position jumps. During a stop, the
+HID-Remapper WebUI Monitor showed neither affected keyboard key presses nor
+G700s Cursor X/Y. This localizes the missing input before Monitor's
+post-receive decode path; it does not by itself distinguish B-side USB receive,
+B-to-A UART delivery, or A-side descriptor/receive handling. The result must
+not be described as a Windows-only output or keypad-Mapping failure. No new
+diagnostic firmware was flashed for this observation.
+At the next joint stop, reconnecting only the keyboard restored keyboard
+input but not G700s. On a separate joint stop, reconnecting only the wired
+G700s restored G700s but not keyboard input. RollerMouse continued to work.
+This is evidence for independently stalled device/interface receive paths,
+not a single Windows output freeze or a complete B-side host shutdown.
+It does not yet prove whether each path is stuck in TinyUSB/HCD polling or in
+per-instance B-to-A forwarding; B-side counters are needed for that boundary.
+With RollerMouse removed, the user observed no complete G700s stops during
+that trial, but the keyboard gave no key input at all. Its NumLock LED stayed
+lit and followed the separate keypad's NumLock changes. This shows an LED
+control path to the keyboard, not a functioning keyboard input path.
+The user confirmed that the Remapper was power-cycled after RollerMouse
+removal, so the dead keyboard is not simply a previously stalled input
+endpoint persisting across the trial. The absence of a G700s stop in this
+trial is not proof that RollerMouse alone causes the stop. It also does not
+prove host-queue saturation: fewer connected devices did not restore the
+keyboard input.
+In that clean, RollerMouse-free state, unplugging and reconnecting only the
+keyboard restored its key input. G700s and the keypad remained connected.
+The keyboard input path can therefore be established by a fresh per-device
+mount, while LED output alone is insufficient evidence for a live interrupt
+IN endpoint. The next diagnostic must identify whether the original mount
+failed to open/arm that endpoint, or whether an armed transfer became stuck.
+After also removing G700s, keyboard input failed on the first attempt, but
+subsequent HID-Remapper USB-C power cycles with keyboard and keypad connected
+made the keyboard work every time reported. This contrasts with the repeated
+keyboard failure with G700s present and RollerMouse absent. The first failed
+attempt prevents claiming G700s is strictly necessary; a controlled G700s
+hot-plug into an already working keyboard is the next no-firmware test.
+In that test, adding G700s after the keyboard and keypad were already working
+did not stop the keyboard. Thus G700s presence and ordinary steady-state
+traffic alone did not reproduce the keyboard failure in this sequence.
+Cold-start enumeration/receive-arm order remains a stronger hypothesis than
+an immediate G700s hot-plug effect, but requires a matching all-device
+hot-plug comparison before treating the startup condition as decisive.
+The user then hot-plugged RollerMouse last, without rebooting the Remapper.
+Keyboard, G700s, and RollerMouse all continued to work during the observation.
+Together with the earlier all-attached-at-boot failures on this second unit,
+this makes concurrent startup enumeration/initial receive-arm scheduling the
+leading investigation target. It is not proof of a particular queue overflow,
+HCD slot fault, or device-specific root cause. Further repeated unplug tests
+are lower value than capturing B-side mount, receive-arm, callback, endpoint
+busy/active, and host-event-queue-drop state during a failed cold start.
+
+### Temporary startup input-endpoint probe (2026-09-24, static gate passed)
+
+The second Remapper is the only target. The candidate
+`firmware/artifacts/remapper_dual_combined-startup-input-endpoint-diagnostics-test.uf2`
+has SHA-256 `1593A9D71EC24B1D502BBA28845C314AA38DE3E1D99734053E5A8E2446A67E9C`.
+It uses the verified queue64 B source and the same preserved TinyUSB source.
+With diagnostics OFF, a fresh B rebuild is exactly the 48,332-byte verified
+runtime (`7DB4B42D476825F6E0296E16B60BE66D64E6558BA312E95A4F152FEE3C206D12`).
+The diagnostic build retains queue64, disables SOF coalescing and one-hot
+fairness, and adds event 20 once per second for the keyboard `0853:0142` and
+wired G700s `046D:C07C`. It reports registration, callback and arm counts,
+arm failures, UART report pending/receive-ready flags, and host-event queue
+drops. It does not change the normal B receive/re-arm logic, descriptors, or
+mouse report processing. A temporary diagnostic A forwards event 20 via the
+configuration HID. `tools/verify-startup-input-diagnostics.py` verifies the
+fresh A/B build inputs, embedded B, RAM loader, UF2 structure, and fixed
+diagnostic-OFF baseline. `tools/hid-host-diagnostics-test.js` covers the UI
+event-20 parser. These are static checks only; a failed or successful hardware
+startup must still be observed. Restore the untouched best-stable combined
+UF2 after diagnosis. Do not press WebUI `Flash B Side` during this test.
+The UF2 was written to the second unit after confirming `G:\INFO_UF2.TXT`
+identified the RP2 bootloader and repeating the static gate. The G drive
+disappeared and Windows enumerated `USB\VID_CAFE&PID_BAF2`; this proves
+bootloader exit and A-side USB enumeration, not yet that the diagnostic B
+runtime is running or that any input works. The local diagnostic page at
+`http://localhost:8000/hid-host-diagnostics.html` returned HTTP 200 with
+the new event-20 display fields. Await B keyboard/G700s probe lines before
+claiming successful diagnostic deployment.
+The first event-20 readback confirmed that diagnostic B is running: keyboard
+`0853:0142` at address 1/instance 0 and G700s `046D:C07C` at address
+2/instance 3 were both registered. Each had `arms=1`, `arm failures=0`,
+`callbacks=0`, `pending=false`, and `receive-ready=false`; the shared host
+queue-drop counter was 1980. In the next sample at 1:32:41, keyboard
+callbacks/arms had risen to 117/118 and G700s to 4105/4106 with zero arm
+failures; queue drops remained 1980. The initial zero callbacks were not
+evidence of a stuck transfer in this run. The high drop total was accumulated
+earlier, apparently during startup, but input callbacks progressed afterward.
+Total drops alone do not identify whether SOF or transfer-completion events
+were lost, and this successful B-side activity is not a failed-start capture.
+After a later USB-C reconnect, the viewer still said `Listening` but its
+last heartbeat and event-20 lines remained at 1:34:07. Windows still listed
+`USB\VID_CAFE&PID_BAF2` as connected; therefore the pasted counters were
+stale and cannot describe the new startup. The diagnostic HTML was updated
+to reopen a permitted WebHID device after five seconds without a new
+diagnostic report, and to clear previous-session counters on each open.
+The local JavaScript reconnect/parser test passes. The user must reload the
+page to receive this client-only fix; no firmware rewrite is needed.
+The user confirmed that, after refreshing the page, the heartbeat and
+endpoint-health timestamps eventually advanced again after a USB reconnect.
+Auto-reconnect is therefore usable for a fresh failed-start capture, though
+it may take a little time; wait for new timestamps before interpreting data.
+In a fresh failed start at 1:42:47, the keyboard did not respond while
+RollerMouse still moved. Event 20 showed keyboard address 1/instance 0 with
+callbacks 1, arms 2, arm failures 0, UART pending false, receive-ready false.
+G700s address 2/instance 3 had callbacks 6685 and arms 6686; the shared host
+queue-drop total was 1982. Thus the host was not globally stopped and the
+keyboard had been successfully re-armed after its first callback, but its
+next callback did not arrive during the reported key presses. The stuck
+boundary is the keyboard's interrupt-IN transfer or its completion delivery,
+not the keyboard mapping or a B-to-A UART report waiting to flush. The queue
+drop total supports an overflow possibility but does not identify the event
+type or prove that this keyboard completion was one of the dropped events.
+
+### Queue-drop type diagnostic candidate (prepared, not flashed)
+
+The first failure confirmed a keyboard-specific armed/busy stall, but the
+1982 total host queue drops do not say whether a transfer-completion event
+or a deferred SOF/function event was discarded. A separate candidate
+`firmware/artifacts/remapper_dual_combined-startup-input-drop-types-diagnostics-test.uf2`
+has SHA-256 `39258D06F72C5E33C0EAFF4DB133C48D0ADA43F533AA224C9DE6C59A2C68ED81`.
+It adds diagnostic-only counts for dropped `HCD_EVENT_XFER_COMPLETE` and
+`USBH_EVENT_FUNC_CALL` events to event 20. The B receive/re-arm logic,
+queue64 capacity, SOF coalescing OFF, one-hot fairness OFF, descriptors, and
+mouse report handling remain unchanged. Its diagnostic-OFF B rebuild remains
+byte-identical to the verified queue64 B runtime. The specialized static
+gate and the browser parser test both pass. It has not been written to a
+device; do not interpret its new fields as measured until a fresh boot with
+this candidate produces new event-20 reports.
+The user explicitly confirmed the current RP2 G: drive was the second test
+unit. After rechecking `G:\INFO_UF2.TXT`, the fixed candidate hash, and the
+specialized static gate, the new combined UF2 was copied to G:. The drive
+disappeared and Windows enumerated `USB\VID_CAFE&PID_BAF2`. This confirms
+bootloader exit and A-side enumeration only; await fresh event-20 lines with
+both `transfer-completion drops` and `deferred-function drops` before using
+the new counters. Do not press WebUI `Flash B Side`.
+The first failed-keyboard boot with this version reported keyboard callbacks
+1/arms 2/arm failures 0/pending false/receive-ready false, while G700s
+callbacks/arms were 1680/1681 and RollerMouse still moved. The shared host
+queue had 1983 drops: 1982 deferred-function events and one
+`HCD_EVENT_XFER_COMPLETE`. This is a strong match for a lost completion
+leaving one device's TinyUSB endpoint busy after HCD activity, but the drop
+record does not include device/endpoint identity, so assigning that one
+completion specifically to the keyboard remains an inference. A candidate
+mitigation should reserve room for completion events by omitting SOF defer
+events only when the 64-entry queue nears capacity; normal-load SOF behavior
+must remain unchanged to protect RollerMouse motion.
+
+### Completion-event queue reserve trial (prepared, not flashed)
+
+`firmware/artifacts/remapper_dual_combined-completion-queue-reserve-diagnostics-test.uf2`
+has SHA-256 `B37C32CEB5C9D5033064F60BC3AF87DFB51FA99FFCB0216F20B7E5312E66A23B`.
+The only host-behavior change is gated by `HOST_COMPLETION_QUEUE_RESERVE=ON`:
+when fewer than 17 of the 64 host-event slots remain, the RP2040 HCD skips
+deferring that frame's SOF callback, preserving at least 16 slots for
+transfer completions and attach/remove events. At lower queue occupancy,
+SOF behavior is unchanged. No descriptor, mouse report, mapping, or HID
+receive/re-arm code changes are part of this candidate. Diagnostic event 20
+additionally shows `SOF deferred by reserve` alongside dropped transfer
+completions and dropped deferred functions. An independently rebuilt
+reserve-OFF/diagnostics-OFF B BIN is byte-identical to the verified 48,332-byte
+queue64 B (`7DB4B42D476825F6E0296E16B60BE66D64E6558BA312E95A4F152FEE3C206D12`).
+The specialized UF2 gate and diagnostic-page parser tests pass. Static checks
+do not establish that keyboard/G700s stops are fixed or that RollerMouse
+remains jump-free; both must be checked on the second test unit before any
+production build or stable designation.
+The user explicitly confirmed that the newly present G: RP2 bootloader was
+the second test unit and authorized this behavior-changing diagnostic trial.
+After rechecking the UF2 hash and static gate, the candidate was written.
+The G drive disappeared and Windows enumerated `USB\VID_CAFE&PID_BAF2`.
+Neither the diagnostic B runtime nor keyboard/G700s/RollerMouse behavior is
+yet confirmed after this write. The untouched best-stable UF2 remains the
+rollback. WebUI `Flash B Side` must remain unused.
+The first fresh event-20 readback at 2:05:33 showed keyboard callbacks/arms
+32/33 and G700s 3181/3182, with zero arm failures and zero host queue,
+transfer-completion, and deferred-function drops. `SOF deferred by reserve`
+was 2060, proving the new guard was exercised under startup load rather
+than merely compiling in. This is a positive queue-integrity observation
+for one boot, not yet a pass for Windows input, repeated cold starts, or
+RollerMouse move-stop behavior.
+The user subsequently confirmed that keyboard and G700s worked in Windows
+and RollerMouse move-stop did not jump in this boot. With all four devices
+connected, ten further HID-Remapper USB-C restart cycles were reported normal:
+keyboard and G700s moved/typed, and RollerMouse move-stop did not jump.
+This is 10/10 for the diagnostic candidate, not proof that rare failures are
+impossible or that the unflashed production-form candidate has passed.
+
+An unflashed production-form candidate has also been prepared at
+`firmware/artifacts/remapper_dual_combined-best-stable-completion-queue-reserve-production-test.uf2`
+(SHA-256 `9383B54B97038BD8E66DCF114A6E895FA2FB6F47CBAEA5FB5CD1BEFF08B91231`).
+Its A flash payload is byte-identical to the current best stable A, regenerated
+from a verified A ELF. Its B uses queue64 and completion reserve ON with all
+diagnostics, SOF coalescing, and one-hot fairness OFF. The reserve-OFF B rebuild
+is still byte-identical to the verified queue64 runtime. The generated
+`flash_b_side` RAM loader and embedded production B runtime passed
+`tools/verify-completion-queue-reserve-candidate.py`. This artifact is not a
+stable release. The diagnostic candidate's ten-cycle test has now been
+reported as normal; the production-form candidate still requires its own
+second-unit hardware trial before any stable designation or first-unit flash.
+The user connected the second test unit in RP2 boot mode to advance to this
+production-form trial. After rechecking its `G:\INFO_UF2.TXT`, the fixed
+candidate hash, and the specialized static gate, the UF2 was written. The
+G drive disappeared and Windows enumerated `USB\VID_CAFE&PID_BAF2`.
+Keyboard/G700s input and RollerMouse move-stop after this production-form
+write are not yet confirmed. This A is the same as the best stable A, so the
+old keypad-versus-Mapping behavior is unchanged by this B-only trial.
+Do not press WebUI `Flash B Side`, which would overwrite the running B with
+the older B image embedded in A.
+The exact verified TinyUSB source currently lives in the ignored
+`build-g700-clean-tinyusb-src` directory. The static baseline hash proves
+what was built for this trial, but before committing or releasing the new
+behavior, preserve its source change as a tracked patch or pinned source
+asset so the candidate can be rebuilt without relying on ignored files.
+
+The user then reported ten USB-C restart cycles with all four devices
+connected: keyboard input worked on every cycle, wired G700s moved on every
+cycle, and RollerMouse move-stop had no position jump. This is 10/10 for the
+production-form queue-reserve candidate, not a guarantee against rarer
+stalls. The keypad/NumLock/equals/JIS regression checks and WBT2 path are
+still separate and have not been reported for this trial. Keep the original
+best-stable UF2 intact and do not flash the first unit yet.
+The user then supplied `C:\Users\ruin_\Downloads\hid-remapper-config.json`
+(SHA-256 `096E477D00376F1D1DEA9DD3710E06EB264D0DFDF0FD2244414B2932F94CF1D9`).
+It has 35 mappings and differs from the saved 45-mapping complete JSON only
+by removing the ten keypad-digit-to-top-row-number mappings. On the second
+unit with DIP3 ON and this native-keypad mapping, the user initially reported
+PC-direct keypad digits and all symbols entering normally, and NumLock OFF
+producing arrows, Home, PgUp and PgDn normally. The user then noticed "two
+entries each"; it is not yet clear whether two characters were actually
+inserted or whether this refers to expected Raw Input DOWN/UP records.
+Therefore keypad duplicate-input status is open, not passed. The specific
+JIS `0x87`/`0x89` keys and WBT2-V4 path remain separately unreported.
+The user clarified that actual keypad double input occurred. The production
+B queue-reserve trial therefore passes the reported mouse/keyboard startup
+checks but FAILS the keypad single-entry requirement with the 35-mapping
+native-keypad JSON. Its A flash is byte-identical to the old best-stable A
+and still has the known path that can insert a keypad usage already present
+via pass-through. A separate A-side keypad deduplication change is required;
+the user specified that only the digit keys double, while `/ * = - + . Enter`
+are each entered once. Thus the fix stays limited to keypad-digit reinsertion;
+the prior A-dedup trial fixed the duplicate but ran with the old B host and
+did not satisfy overall device stability. A combined A-dedup + queue-reserve
+B candidate is the next controlled test, not a stable release yet.
+The combined candidate is now prepared but unflashed:
+`firmware/artifacts/remapper_dual_combined-native-keypad-dedup-completion-reserve-test.uf2`
+(SHA-256 `72CCE415BFCBF8E5023AA40CB307DCDC3A552C511F6AF3F9EC90CB0AE98A224F`).
+A is byte-identical to the earlier keypad-dedup A component, freshly built
+with `NATIVE_KEYPAD_DEDUP=ON`; B is byte-identical to the current
+completion-queue-reserve production B RAM stage. Both diagnostics remain OFF.
+`tools/verify-native-keypad-reserve-candidate.py` checks the exact two stages,
+fresh A BIN, pinned embedded B, and build options. The static gate passed;
+real keypad single-entry, NumLock-OFF navigation, operator/equals/JIS input,
+keyboard/G700s cold starts and RollerMouse move-stop all remain to be tested
+on the second unit. Do not flash the first unit or press `Flash B Side`.
+The user placed the second test unit in RP2 boot mode. After confirming
+`G:\INFO_UF2.TXT`, candidate SHA-256 and the two-stage static gate, this
+combined trial was written. The G drive disappeared and Windows enumerated
+`USB\VID_CAFE&PID_BAF2`. These checks establish firmware boot, not keypad
+single-entry or mouse/keyboard stability. Hardware results are pending.
+The user then confirmed PC-direct, DIP3 ON, native 35-mapping behavior:
+keypad 1 and 0 each inserted one character, `/ * = - + . Enter` each worked
+once, and NumLock OFF produced arrows, Home, PgUp and PgDn correctly. This
+passes the reported keypad single-entry and navigation checks for the
+combined candidate. The four-device cold-start and RollerMouse tests were
+pending at that point; JIS `0x87`/`0x89` and WBT2-V4 were also unreported.
+The user then tested the same second Remapper directly connected to the PC
+with all four HID devices attached. Across ten USB-C disconnect/reconnect
+cycles, RealForce ordinary keys and wired G700s worked each time, and
+RollerMouse move-stop never produced a position jump. This is a 10/10
+PC-direct result for the combined A-dedup + B queue-reserve candidate, not
+proof against rarer failures. WBT2-V4 transport and individual JIS
+`0x87`/`0x89` keys remain to be checked before considering wider deployment.
+The user later confirmed the PC-direct JIS `0x87`/`0x89` keys work. An initial
+WBT2-V4 response saying "none occur" is ambiguous between no observed
+failures and no key input, so wireless-path acceptance was left open until
+positive keypad output was explicitly confirmed.
+The user clarified that all listed WBT2-V4 functions were normal: keypad
+digits/operators, NumLock-OFF navigation, keyboard and G700s input, and no
+RollerMouse move-stop jump in the initial connection. This supersedes the
+ambiguity above. Repeated WBT2 reconnections and rapid keypad/operator
+sequences remain untested.
+The user then reported that all ten WBT2-V4-path USB-C reconnection trials
+with four devices were stable, and repeated keypad digits plus `/ * = - + . Enter`
+did not trigger NumLock lock-up, double input, device stops, or RollerMouse
+position jumps. This complements the earlier PC-direct 10/10 result. It is
+the broadest second-unit hardware validation of the combined A-dedup + B
+queue-reserve candidate so far, not proof against rarer failures or permission
+to overwrite the previous best-stable UF2. The candidate's production source
+still needs a tracked/pinned TinyUSB patch before reproducible release.
+
 A separate run had G700s B/A counts and nonzero A-side mouse output counts
 rising while the user reported no cursor movement. That observation requires
 its own Windows-side check and must not be merged with the seven-second

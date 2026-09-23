@@ -30,10 +30,19 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 # descriptor remain unchanged.
 option(HID_HOST_DIAGNOSTICS "Enable dual A/B USB host diagnostic reports" OFF)
 option(HOST_QUEUE_CAPACITY_64 "Increase B-side USB host event queue to 64 entries" OFF)
+option(HOST_COMPLETION_QUEUE_RESERVE "Reserve B host queue slots for transfer completions under SOF overload" OFF)
 option(HOST_SOF_COALESCE "Keep at most one pending B-side SOF callback" OFF)
 option(HOST_ONE_HOT_FAIRNESS "Rotate one B-side interrupt endpoint per SOF" OFF)
 option(MOUSE_PIPELINE_TRACE "Enable frozen dual A/B mouse pipeline trace rings" OFF)
 option(ALT_NUMPAD_EQUALS "Translate RealForce Alt+Numpad6+Numpad1 to '='" OFF)
+option(NATIVE_KEYPAD_DEDUP "Avoid reinserting keypad usages already passed through to output" OFF)
+option(WBT2_NUMERIC_KEYPAD_PRIORITY
+    "Keep mapped keypad digits instead of restoring keypad navigation from inferred NumLock" OFF)
+option(WBT2_SUPPRESS_23UB_NUM_LOCK
+    "Suppress reinjection of Realforce 23UB sync NumLock while preserving its input reports" OFF)
+if(WBT2_SUPPRESS_23UB_NUM_LOCK AND NOT WBT2_NUMERIC_KEYPAD_PRIORITY)
+    message(FATAL_ERROR "WBT2_SUPPRESS_23UB_NUM_LOCK requires WBT2_NUMERIC_KEYPAD_PRIORITY")
+endif()
 option(STABLE_CONSUMER_DESCRIPTOR "Use the pre-media-expansion Consumer Control descriptor" OFF)
 option(STABLE_MOUSE_BUTTON_DESCRIPTOR "Use the three-button mouse descriptor" OFF)
 option(STABLE_A_C436_BASELINE "Build dual A with the pre-c436 descriptor and NumLock baseline" OFF)
@@ -103,10 +112,25 @@ endif()
 pico_add_extra_outputs(remapper)
 
 
+set(DUAL_A_SOURCE_OVERRIDE "" CACHE FILEPATH
+    "Historical A application source for controlled firmware comparisons")
+set(DUAL_A_FLASH_SOURCE_OVERRIDE "" CACHE FILEPATH
+    "Historical A flash helper source for controlled firmware comparisons")
+if(DUAL_A_SOURCE_OVERRIDE)
+    set(DUAL_A_SOURCE "${DUAL_A_SOURCE_OVERRIDE}")
+else()
+    set(DUAL_A_SOURCE src/remapper_dual_a.cc)
+endif()
+if(DUAL_A_FLASH_SOURCE_OVERRIDE)
+    set(DUAL_A_FLASH_SOURCE "${DUAL_A_FLASH_SOURCE_OVERRIDE}")
+else()
+    set(DUAL_A_FLASH_SOURCE src/pico_debug/flash.c)
+endif()
+
 add_executable(remapper_dual_a
     src/main.cc
     src/remapper.cc
-    src/remapper_dual_a.cc
+    ${DUAL_A_SOURCE}
     src/crc.cc
     src/descriptor_parser.cc
     src/tinyusb_stuff.cc
@@ -119,7 +143,7 @@ add_executable(remapper_dual_a
     src/tick.cc
     src/activity_led.cc
     src/pico_debug/swd.c
-    src/pico_debug/flash.c
+    ${DUAL_A_FLASH_SOURCE}
     src/pico_debug/adi.c
     dual_b_binary.c
     src/ps_auth.cc
@@ -153,6 +177,15 @@ if(MOUSE_PIPELINE_TRACE)
 endif()
 if(ALT_NUMPAD_EQUALS AND NOT STABLE_A_C436_BASELINE)
     target_compile_definitions(remapper_dual_a PRIVATE ALT_NUMPAD_EQUALS=1)
+endif()
+if(NATIVE_KEYPAD_DEDUP)
+    target_compile_definitions(remapper_dual_a PRIVATE NATIVE_KEYPAD_DEDUP=1)
+endif()
+if(WBT2_NUMERIC_KEYPAD_PRIORITY)
+    target_compile_definitions(remapper_dual_a PRIVATE WBT2_NUMERIC_KEYPAD_PRIORITY=1)
+endif()
+if(WBT2_SUPPRESS_23UB_NUM_LOCK)
+    target_compile_definitions(remapper_dual_a PRIVATE WBT2_SUPPRESS_23UB_NUM_LOCK=1)
 endif()
 if(STABLE_CONSUMER_DESCRIPTOR AND NOT STABLE_A_C436_BASELINE)
     target_compile_definitions(remapper_dual_a PRIVATE STABLE_CONSUMER_DESCRIPTOR=1)
@@ -213,6 +246,9 @@ if(HID_HOST_DIAGNOSTICS)
 endif()
 if(HOST_QUEUE_CAPACITY_64)
     target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_TASK_QUEUE_SZ=64)
+endif()
+if(HOST_COMPLETION_QUEUE_RESERVE)
+    target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_COMPLETION_QUEUE_RESERVE=1)
 endif()
 if(HOST_SOF_COALESCE)
     target_compile_definitions(tinyusb_host INTERFACE CFG_TUH_SOF_QUEUE_COALESCE=1)

@@ -24,6 +24,7 @@ enum class DualCommand : uint8_t {
     MOUSE_PIPELINE_TRACE_CONTROL = 15,
     MOUSE_PIPELINE_TRACE_REQUEST = 16,
     MOUSE_PIPELINE_TRACE_RESPONSE = 17,
+    B_G700_HEALTH = 18,
 };
 
 struct __attribute__((packed)) device_connected_t {
@@ -118,6 +119,18 @@ struct __attribute__((packed)) midi_received_t {
 struct __attribute__((packed)) dual_hid_host_diagnostic_t {
     DualCommand command = DualCommand::HID_HOST_DIAGNOSTIC;
     hid_host_diagnostic_t diagnostic;
+};
+
+// Small diagnostic-only B-to-A probe. Unlike the full 59-byte diagnostic
+// record, this fits easily in a nearly full UART transmit buffer.
+struct __attribute__((packed)) dual_b_g700_health_t {
+    DualCommand command = DualCommand::B_G700_HEALTH;
+    uint8_t dev_addr;
+    uint8_t instance;
+    uint8_t flags; // bit 0 pending, bit 1 receive-ready
+    uint32_t callbacks;
+    uint32_t arms;
+    uint32_t arm_failures;
 };
 
 // Trace records are never sent while the pipeline is running. A requests a

@@ -1,5 +1,8 @@
 #include <bsp/board_api.h>
 #include <tusb.h>
+#ifdef HID_HOST_DIAGNOSTICS
+#include "host/hcd.h"
+#endif
 
 #include "usb_midi_host.h"
 
@@ -39,6 +42,10 @@ static uint8_t pending_hid_host_diagnostic_tail = 0;
 static uint8_t pending_hid_host_diagnostic_items = 0;
 static uint64_t next_hid_host_diagnostic_receive_report = 0;
 static const uint64_t HID_HOST_DIAGNOSTIC_RECEIVE_REPORT_US = 1000000;
+static uint32_t input_health_callbacks[CFG_TUH_HID];
+static uint32_t input_health_arms[CFG_TUH_HID];
+static uint32_t input_health_arm_failures[CFG_TUH_HID];
+static uint64_t next_input_health_probe = 0;
 
 static void queue_hid_host_diagnostic(const dual_hid_host_diagnostic_t& diagnostic) {
     if (pending_hid_host_diagnostic_items == HID_HOST_DIAGNOSTIC_PENDING_QUEUE_SIZE) {
@@ -90,8 +97,59 @@ static void send_hid_host_diagnostic(
 
 static bool arm_hid_report(uint8_t dev_addr, uint8_t instance) {
     bool armed = tuh_hid_receive_report(dev_addr, instance);
+    if (instance < CFG_TUH_HID) {
+        input_health_arms[instance]++;
+        if (!armed) input_health_arm_failures[instance]++;
+    }
     send_hid_host_diagnostic(HidHostDiagnosticEvent::RECEIVE_ARM, dev_addr, instance, armed);
     return armed;
+}
+
+static void queue_input_health_probe(uint16_t vid, uint16_t pid) {
+    hid_host_diagnostic_t diagnostic = {};
+    diagnostic.event = HidHostDiagnosticEvent::B_INPUT_ENDPOINT_HEALTH;
+    diagnostic.vid = vid;
+    diagnostic.pid = pid;
+    diagnostic.report_descriptor_bytes_length = 16;
+    uint32_t drops = usbh_diagnostic_queue_drop_count();
+    memcpy(diagnostic.report_descriptor_bytes + 4, &drops, 4);
+    uint32_t xfer_drops = usbh_diagnostic_xfer_drop_count();
+    uint32_t func_drops = usbh_diagnostic_func_drop_count();
+    memcpy(diagnostic.report_descriptor_bytes + 8, &xfer_drops, 4);
+    memcpy(diagnostic.report_descriptor_bytes + 12, &func_drops, 4);
+#ifdef CFG_TUH_COMPLETION_QUEUE_RESERVE
+    diagnostic.report_descriptor_bytes_length = 20;
+    uint32_t sof_skips = hcd_rp2040_diagnostic_sof_reserve_skip_count();
+    memcpy(diagnostic.report_descriptor_bytes + 16, &sof_skips, 4);
+#endif
+    for (uint8_t instance = 0; instance < CFG_TUH_HID; instance++) {
+        const hid_host_diagnostic_t& context = hid_host_diagnostics[instance];
+        if (context.dev_addr == 0 || context.vid != vid || context.pid != pid ||
+            !(context.flags & HID_HOST_DIAGNOSTIC_FLAG_HAS_INPUT)) continue;
+        diagnostic.dev_addr = context.dev_addr;
+        diagnostic.instance = instance;
+        diagnostic.report_length = pending_hid_reports[instance].occupied ? 1u : 0u;
+        if (tuh_hid_receive_ready(context.dev_addr, instance)) {
+            diagnostic.report_length |= 2u;
+        }
+        diagnostic.report_bytes_length = 8;
+        memcpy(diagnostic.report_bytes, &input_health_callbacks[instance], 4);
+        memcpy(diagnostic.report_bytes + 4, &input_health_arms[instance], 4);
+        memcpy(diagnostic.report_descriptor_bytes, &input_health_arm_failures[instance], 4);
+        break;
+    }
+    dual_hid_host_diagnostic_t message = {};
+    message.diagnostic = diagnostic;
+    queue_hid_host_diagnostic(message);
+}
+
+static void queue_input_health_probes() {
+    uint64_t now = time_us_64();
+    if (now < next_input_health_probe ||
+        pending_hid_host_diagnostic_items > HID_HOST_DIAGNOSTIC_PENDING_QUEUE_SIZE - 2) return;
+    queue_input_health_probe(0x0853, 0x0142);
+    queue_input_health_probe(0x046d, 0xc07c);
+    next_input_health_probe = now + 1000000;
 }
 
 static void set_hid_host_diagnostic_context(
@@ -283,6 +341,7 @@ int main() {
         // nonblocking write leaves the event at the queue head for a later
         // main-loop retry.
         if (!has_pending_hid_reports()) {
+            queue_input_health_probes();
             flush_pending_hid_host_diagnostics();
         }
 #endif
@@ -317,6 +376,7 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
 #ifdef HID_HOST_DIAGNOSTICS
+    if (instance < CFG_TUH_HID) input_health_callbacks[instance]++;
     // Mount callbacks are useful enumeration evidence, but a received report
     // is direct proof that the B-side HID callback is running.  Keep this
     // nonblocking diagnostic traffic to one packet per second globally.
@@ -371,6 +431,11 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 #ifdef HID_HOST_DIAGNOSTICS
     set_hid_host_diagnostic_context(
         dev_addr, instance, vid, pid, hub_addr, hub_port, itf_info, itf_info_valid, desc_len, has_input);
+    if (instance < CFG_TUH_HID) {
+        input_health_callbacks[instance] = 0;
+        input_health_arms[instance] = 0;
+        input_health_arm_failures[instance] = 0;
+    }
     send_hid_host_diagnostic(HidHostDiagnosticEvent::MOUNT, dev_addr, instance, true);
 #endif
 
@@ -397,6 +462,9 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     send_hid_host_diagnostic(HidHostDiagnosticEvent::UMOUNT, dev_addr, instance, true);
     if (instance < CFG_TUH_HID) {
         hid_host_diagnostics[instance] = {};
+        input_health_callbacks[instance] = 0;
+        input_health_arms[instance] = 0;
+        input_health_arm_failures[instance] = 0;
     }
 #endif
     if ((instance < CFG_TUH_HID) && (pending_hid_reports[instance].dev_addr == dev_addr)) {

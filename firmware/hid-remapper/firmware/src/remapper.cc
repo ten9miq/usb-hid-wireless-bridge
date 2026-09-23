@@ -132,6 +132,9 @@ static uint64_t next_hid_host_diagnostic_heartbeat = 0;
 static bool hid_host_diagnostic_counter_snapshot_pending = false;
 static bool hid_host_hcd_snapshot_pending = false;
 static bool hid_host_diagnostic_transport_snapshot_pending = false;
+static bool b_runtime_identity_snapshot_pending = false;
+static bool b_g700_health_snapshot_pending = false;
+static bool b_flash_loader_status_snapshot_pending = false;
 static const uint64_t HID_HOST_DIAGNOSTIC_HEARTBEAT_US = 1000000;
 // Ports 0..15 and one slot for an unknown/unassigned physical port.
 static const uint8_t HID_HOST_DIAGNOSTIC_PORTS = 17;
@@ -481,6 +484,9 @@ static bool input_usage_active(uint32_t usage) {
 
 static void clear_output_usage(uint32_t usage);
 static void set_output_usage(uint32_t usage);
+#ifdef NATIVE_KEYPAD_DEDUP
+static bool output_usage_active(uint32_t usage);
+#endif
 
 #if defined(WBT2_BOOT_INTERFACES) && !defined(STABLE_NUM_LOCK_INFERENCE)
 static bool get_inferred_num_lock_state(bool& state);
@@ -545,7 +551,16 @@ static void apply_num_lock_aware_keypad_output() {
             // is pressed.  Clearing all top-row digits unconditionally would
             // also swallow ordinary number-row input while NumLock is OFF.
             clear_output_usage(top);
+#ifdef NATIVE_KEYPAD_DEDUP
+            // Without a keypad-to-top-row JSON mapping, the original keypad
+            // usage is already present via pass-through.  Adding it again
+            // creates two entries in the 6KRO array and doubles the digit.
+            if (!output_usage_active(keypad)) {
+                set_output_usage(keypad);
+            }
+#else
             set_output_usage(keypad);
+#endif
         }
     }
 }
@@ -601,6 +616,33 @@ static void set_output_usage(uint32_t usage) {
     }
 }
 
+#ifdef NATIVE_KEYPAD_DEDUP
+static bool output_usage_active(uint32_t usage) {
+    for (auto const& array_usage : our_array_range_usages) {
+        if ((usage >= array_usage.usage) &&
+            (usage <= array_usage.usage_def.usage_maximum)) {
+            uint32_t expected = array_usage.usage_def.logical_minimum + usage - array_usage.usage;
+            for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                uint16_t bitpos = array_usage.usage_def.bitpos + i * array_usage.usage_def.size;
+                if (get_bits(reports[array_usage.usage_def.report_id],
+                             report_sizes[array_usage.usage_def.report_id],
+                             bitpos, array_usage.usage_def.size) == expected) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    auto search = our_usages_flat.find(usage);
+    if (search == our_usages_flat.end()) {
+        return false;
+    }
+    const usage_def_t& def = search->second;
+    return get_bits(reports[def.report_id], report_sizes[def.report_id],
+                    def.bitpos, def.size) != 0;
+}
+#endif
+
 static void apply_alt_numpad_equals_chord() {
     bool chord = (input_usage_active(ALT_LEFT_USAGE) || input_usage_active(ALT_RIGHT_USAGE)) &&
         input_usage_active(NUMPAD_6_USAGE) && input_usage_active(NUMPAD_1_USAGE);
@@ -652,6 +694,12 @@ struct num_lock_sync_filter_t {
 
 static const uint64_t NUM_LOCK_SYNC_EDGE_US = 20000;
 static std::unordered_map<uint16_t, num_lock_sync_filter_t> num_lock_sync_filters;
+#ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
+// 23UB's NumLock key controls its own LED; NumLock input reports surrounding
+// keypad actions are synchronization taps, not a user lock-key press.
+// Keep this fixed-size so the quirk cannot affect host enumeration via heap use.
+static bool realforce_23ub_devices[256] = {};
+#endif
 
 #ifndef STABLE_NUM_LOCK_INFERENCE
 static bool get_inferred_num_lock_state(bool& state) {
@@ -832,6 +880,15 @@ static void observe_num_lock_sync_state(
 static void apply_filtered_num_lock_states(uint64_t now) {
     for (auto& [interface, filter] : num_lock_sync_filters) {
         advance_num_lock_sync_timeout(filter, now);
+#ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
+        if (realforce_23ub_devices[interface >> 8]) {
+            // Preserve the normal report parser and Monitor path. Only stop
+            // the 23UB's synchronization taps from being re-injected into
+            // the PC-facing keyboard state.
+            filter.pending_output_states.clear();
+            filter.output_num_lock = false;
+        }
+#endif
         if (!filter.pending_output_states.empty()) {
             filter.output_num_lock = filter.pending_output_states.front();
             filter.pending_output_states.pop_front();
@@ -2008,7 +2065,9 @@ void process_mapping(bool auto_repeat) {
     }
 
 #ifdef ALT_NUMPAD_EQUALS
+#ifndef WBT2_NUMERIC_KEYPAD_PRIORITY
     apply_num_lock_aware_keypad_output();
+#endif
     apply_alt_numpad_equals_chord();
 #endif
 
@@ -2197,8 +2256,44 @@ bool send_hid_host_diagnostic_report(send_report_t do_send_report, uint8_t inter
         hid_host_diagnostic_counter_snapshot_pending = true;
         hid_host_hcd_snapshot_pending = true;
         hid_host_diagnostic_transport_snapshot_pending = true;
+        b_runtime_identity_snapshot_pending = true;
+        b_g700_health_snapshot_pending = true;
+        b_flash_loader_status_snapshot_pending = true;
         hid_host_pipeline_snapshot_cursor = 0;
         return true;
+    }
+
+    if (b_flash_loader_status_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        make_b_flash_loader_status_snapshot(&snapshot);
+        uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+        memcpy(report + 6, &snapshot, sizeof(snapshot));
+        if (!do_send_report(interface, report, sizeof(report))) return false;
+        b_flash_loader_status_snapshot_pending = false;
+        return true;
+    }
+
+    if (b_runtime_identity_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        make_b_runtime_identity_snapshot(&snapshot);
+        uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+        memcpy(report + 6, &snapshot, sizeof(snapshot));
+        if (!do_send_report(interface, report, sizeof(report))) return false;
+        b_runtime_identity_snapshot_pending = false;
+        return true;
+    }
+
+    if (b_g700_health_snapshot_pending) {
+        hid_host_diagnostic_t snapshot = {};
+        if (!make_b_g700_health_snapshot(&snapshot)) {
+            b_g700_health_snapshot_pending = false;
+        } else {
+            uint8_t report[64] = { REPORT_ID_HID_HOST_DIAGNOSTIC, 'H', 'H', 'D', '1', 2 };
+            memcpy(report + 6, &snapshot, sizeof(snapshot));
+            if (!do_send_report(interface, report, sizeof(report))) return false;
+            b_g700_health_snapshot_pending = false;
+            return true;
+        }
     }
 
     // The latest B-side HCD state follows every heartbeat.  Keep it ahead of
@@ -3099,12 +3194,20 @@ void set_monitor_enabled(bool enabled) {
 
 void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, uint8_t hub_port) {
     hub_ports[interface >> 8] = (hub_port != 0) ? hub_port : HUB_PORT_NONE;
+#ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
+    if (vid == 0x0853 && pid == 0x0117) {
+        realforce_23ub_devices[interface >> 8] = true;
+    }
+#endif
     if (our_descriptor->device_connected != nullptr) {
         our_descriptor->device_connected(interface, vid, pid);
     }
 }
 
 void device_disconnected_callback(uint8_t dev_addr) {
+#ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
+    realforce_23ub_devices[dev_addr] = false;
+#endif
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }

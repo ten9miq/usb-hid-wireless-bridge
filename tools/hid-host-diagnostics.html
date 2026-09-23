@@ -9,14 +9,22 @@
   #status { margin-left: .75rem; }
 </style>
 <button id="connect">Connect configuration HID</button><span id="status">Idle</span>
+<p>Connect once, then keep this page open while reconnecting HID-Remapper. The page retries the permitted configuration interface; if it stays disconnected, press Connect configuration HID again.</p>
+<button id="flash-b-side" disabled>Flash embedded B side</button><span id="flash-b-status">Available after connecting to the temporary diagnostic A firmware</span>
+<p>This action writes the B image embedded in A. After it finishes, disconnect and reconnect the HID-Remapper power so B starts from the new image.</p>
 <p id="heartbeat">Heartbeat: none received</p>
 <p id="last-received">Last received report: none</p>
+<p id="b-runtime">B diagnostic runtime: no identity snapshot received</p>
+<p id="g700-health">B G700s endpoint: no compact health probe received</p>
+<p id="keyboard-health">B keyboard input: no endpoint probe received</p>
+<p id="input-g700-health">B G700s input: no endpoint probe received</p>
+<p id="b-flash-loader">B flash loader: no status snapshot received</p>
 <button id="capture-hcd-baseline" disabled>Capture HCD baseline</button>
 <span id="hcd-baseline-status">No baseline captured</span>
 <table>
   <caption>RP2040 host-controller snapshot (diagnostic event 15)</caption>
-  <thead><tr><th>Sample</th><th>EPX / suppression</th><th>INT_EP_CTRL / enabled</th><th>Endpoint slots C/K/A/B</th><th>Control timeout / error</th><th>Open failures</th><th>HID instances</th></tr></thead>
-  <tbody id="hcd-snapshots"><tr><td colspan="7">No HCD snapshot received</td></tr></tbody>
+  <thead><tr><th>Sample</th><th>EPX / suppression</th><th>INT_EP_CTRL / enabled</th><th>Endpoint slots C/K/A/B</th><th>Control timeout / error</th><th>Open failures</th><th>HID instances</th><th>Host queue drops</th></tr></thead>
+  <tbody id="hcd-snapshots"><tr><td colspan="8">No HCD snapshot received</td></tr></tbody>
 </table>
 <table>
   <caption>B diagnostic UART transport heartbeat (diagnostic event 16)</caption>
@@ -38,6 +46,10 @@
   <thead><tr><th>Mapping nonzero frames X / Y</th><th>Accumulated additions X / Y</th><th>Mouse reports built</th><th>Queue accepted</th><th>USB sent</th></tr></thead>
   <tbody id="output-counters"><tr><td colspan="5">No output counter snapshot received</td></tr></tbody>
 </table>
+<p>Recent counter timeline (newest first; keep moving G700s while it stutters or stops)</p>
+<pre id="timeline">No counter history received</pre>
+<p>WebHID connection history (newest first)</p>
+<pre id="connection-history">No connection history received</pre>
 <pre id="raw"></pre>
 <table>
   <thead><tr><th>Event</th><th>Success</th><th>Address / instance</th><th>Interface</th><th>VID:PID</th><th>Descriptor / received</th><th>Raw report bytes</th><th>Raw descriptor bytes</th><th>Hub</th></tr></thead>
@@ -52,11 +64,18 @@ const events = {
   9: "endpoint open failure", 10: "HID instance capacity",
   11: "parsed Cursor usage", 12: "report counters",
   13: "input counters", 14: "output counters", 15: "HCD snapshot",
-  16: "B diagnostic transport"
+  16: "B diagnostic transport", 17: "B runtime identity",
+  18: "B G700s endpoint health", 19: "B flash loader status",
+  20: "B input endpoint health"
 };
 const status = document.querySelector("#status");
 const heartbeat = document.querySelector("#heartbeat");
 const lastReceived = document.querySelector("#last-received");
+const bRuntime = document.querySelector("#b-runtime");
+const g700Health = document.querySelector("#g700-health");
+const keyboardHealth = document.querySelector("#keyboard-health");
+const inputG700Health = document.querySelector("#input-g700-health");
+const bFlashLoader = document.querySelector("#b-flash-loader");
 const raw = document.querySelector("#raw");
 const tbody = document.querySelector("#events");
 const counterBody = document.querySelector("#counters");
@@ -64,15 +83,47 @@ const usageCounterBody = document.querySelector("#usage-counters");
 const outputCounterBody = document.querySelector("#output-counters");
 const hcdSnapshotBody = document.querySelector("#hcd-snapshots");
 const diagnosticTransportBody = document.querySelector("#diagnostic-transport");
+const timeline = document.querySelector("#timeline");
+const connectionHistory = document.querySelector("#connection-history");
 const hcdBaselineButton = document.querySelector("#capture-hcd-baseline");
 const hcdBaselineStatus = document.querySelector("#hcd-baseline-status");
+const flashBSideButton = document.querySelector("#flash-b-side");
+const flashBSideStatus = document.querySelector("#flash-b-status");
+let selectedDeviceIdentity = null;
+let listeningDevice = null;
+let flashCommandSent = false;
+const allowStableBRestore = /(?:^|[?&])restoreStableB=1(?:&|$)/.test(globalThis.location?.search || "");
+let reconnectInProgress = false;
+let reconnectTimer = null;
 let heartbeatCount = 0;
+let lastDiagnosticReportAt = 0;
 const descriptorFragments = new Map();
 const counterSnapshots = new Map();
 const usageCounterSnapshots = new Map();
 let latestHcdSnapshot = null;
 let latestDiagnosticTransportSnapshot = null;
 let hcdBaseline = null;
+const counterTimeline = [];
+const connectionEvents = [];
+let lastReconnectState = "";
+
+function recordConnection(message) {
+  connectionEvents.unshift(`${new Date().toLocaleTimeString()} ${message}`);
+  if (connectionEvents.length > 30) connectionEvents.pop();
+  connectionHistory.textContent = connectionEvents.join("\n");
+}
+
+function recordReconnectState(state) {
+  if (lastReconnectState === state) return;
+  lastReconnectState = state;
+  recordConnection(state);
+}
+
+function recordCounterTimeline(message) {
+  counterTimeline.unshift(`${new Date().toLocaleTimeString()} ${message}`);
+  if (counterTimeline.length > 60) counterTimeline.pop();
+  timeline.textContent = counterTimeline.join("\n");
+}
 
 function hex(value, digits) {
   return value.toString(16).toUpperCase().padStart(digits, "0");
@@ -117,7 +168,7 @@ function parsedUsage(data, eventCode) {
 function deviceName(vid, pid) {
   const known = {
     "046D:C06B": "G700s",
-    "046D:C531": "G700s receiver",
+    "046D:C07C": "G700s (USB)",
     "0B33:2000": "RollerMouse",
     "0B33:3022": "RollerMouse",
   };
@@ -180,6 +231,9 @@ function reportCounters(data, eventCode) {
   };
   counterSnapshots.set(snapshot.addressInstance, snapshot);
   renderCounterSnapshots();
+  if (snapshot.vidPid === "046D:C07C") {
+    recordCounterTimeline(`G700s ${snapshot.addressInstance}: B ${snapshot.bCount} (${ageText(snapshot.bAge)}); A ${snapshot.aCount} (${ageText(snapshot.aAge)})`);
+  }
 }
 
 function renderUsageCounterSnapshots() {
@@ -220,6 +274,9 @@ function usageCounters(data, eventCode) {
   };
   usageCounterSnapshots.set(snapshot.hubPort, snapshot);
   renderUsageCounterSnapshots();
+  if (snapshot.parsedX || snapshot.parsedY) {
+    recordCounterTimeline(`hub ${snapshot.hubPort}: reports ${snapshot.reports}; parsed X/Y ${snapshot.parsedX}/${snapshot.parsedY}; read_input X/Y ${snapshot.readInputX}/${snapshot.readInputY}`);
+  }
 }
 
 function outputCounters(data, eventCode) {
@@ -236,6 +293,7 @@ function outputCounters(data, eventCode) {
     row.append(cell);
   }
   outputCounterBody.replaceChildren(row);
+  recordCounterTimeline(`output: built ${data.getUint32(49, true)}; queued ${data.getUint32(53, true)}; USB sent ${data.getUint32(57, true)}`);
 }
 
 function endpointStates(snapshot) {
@@ -258,7 +316,7 @@ function renderHcdSnapshots() {
       `configured ${item.epx & 1 ? "yes" : "no"}; active ${item.epx & 2 ? "yes" : "no"}; pending ${item.epx & 4 ? "yes" : "no"}; suppressed ${item.suppressed ? "yes" : "no"}`,
       `${hex(item.currentCtrl, 8)} / ${hex(item.enabled, 4)} (saved ${hex(item.savedCtrl, 8)})`,
       endpointStates(item), `${item.timeouts} / ${item.errors}`,
-      String(item.openFailures), String(item.hidInstances),
+      String(item.openFailures), String(item.hidInstances), String(item.queueDrops),
     ]) {
       const cell = document.createElement("td");
       cell.textContent = text;
@@ -268,7 +326,7 @@ function renderHcdSnapshots() {
   }
   if (!latestHcdSnapshot && !hcdBaseline) {
     const cell = document.createElement("td");
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     cell.textContent = "No HCD snapshot received";
     const row = document.createElement("tr");
     row.append(cell);
@@ -288,6 +346,7 @@ function hcdSnapshot(data, eventCode) {
     currentCtrl: data.getUint32(29, true), enabled: data.getUint16(33, true),
     configured: data.getUint16(35, true), claimed: data.getUint16(37, true),
     active: data.getUint16(39, true), busy: data.getUint16(41, true),
+    queueDrops: data.getUint32(43, true),
   };
   hcdBaselineButton.disabled = false;
   renderHcdSnapshots();
@@ -323,6 +382,71 @@ function diagnosticTransport(data, eventCode) {
   diagnosticTransportBody.replaceChildren(row);
 }
 
+function compactBHealth(data, eventCode) {
+  if (data.byteLength < 63) return;
+  if (eventCode === 20 && data.getUint8(40) >= 8) {
+    const vid = data.getUint16(16, true);
+    const pid = data.getUint16(18, true);
+    const label = vid === 0x0853 && pid === 0x0142 ? "keyboard" : vid === 0x046d && pid === 0xc07c ? "G700s" : null;
+    if (label) {
+      const flags = data.getUint16(22, true);
+      const registered = data.getUint8(7) !== 0;
+      const dropTypes = data.getUint8(40) >= 16
+        ? `; transfer-completion drops ${data.getUint32(49, true)}; deferred-function drops ${data.getUint32(53, true)}`
+        : "";
+      const reserveSkips = data.getUint8(40) >= 20
+        ? `; SOF deferred by reserve ${data.getUint32(57, true)}`
+        : "";
+      const description = registered && data.getUint8(24) >= 8
+        ? `address ${data.getUint8(7)}, instance ${data.getUint8(8)}; callbacks ${data.getUint32(25, true)}; arms ${data.getUint32(29, true)}; arm failures ${data.getUint32(41, true)}; pending ${Boolean(flags & 1)}; receive-ready ${Boolean(flags & 2)}; host queue drops ${data.getUint32(45, true)}${dropTypes}${reserveSkips}`
+        : `input interface not registered on B; host queue drops ${data.getUint32(45, true)}${dropTypes}${reserveSkips}`;
+      const target = label === "keyboard" ? keyboardHealth : inputG700Health;
+      target.textContent = `B ${label} input: ${description}; ${new Date().toLocaleTimeString()}`;
+      bRuntime.textContent = `B minimal input-endpoint probe active; ${new Date().toLocaleTimeString()}`;
+      recordCounterTimeline(`B ${label}: ${description}`);
+    }
+    return;
+  }
+  if (eventCode === 19) {
+    const phase = data.getUint32(25, true);
+    const detail = data.getUint32(29, true);
+    const source = data.getUint8(41) === 1 ? "WebUI B flash" : data.getUint8(41) === 2 ? "RAM B loader" : "unknown source";
+    const labels = ["not observed", "entered", "SWD setup", "programming", "readback", "verified"];
+    bFlashLoader.textContent = `B flash (${source}): ${labels[phase] || `phase ${phase}`}; detail ${hex(detail, 8)}; image ${data.getUint16(22, true)} bytes; ${new Date().toLocaleTimeString()}`;
+    if (source === "WebUI B flash") {
+      flashBSideStatus.textContent = phase === 5
+        ? "B image readback verified; disconnect and reconnect HID-Remapper power now"
+        : `B flash ${labels[phase] || `phase ${phase}`}; wait for verified status`;
+      flashBSideButton.disabled = true;
+    }
+  }
+  if (eventCode === 17) {
+    const version = data.getUint8(24) ? data.getUint8(25) : 0;
+    const embeddedBLength = data.getUint16(22, true);
+    bRuntime.textContent = data.getUint8(6) & 1
+      ? `B diagnostic runtime: HHD${version} handshake confirmed; A embedded B ${embeddedBLength} bytes; ${new Date().toLocaleTimeString()}`
+      : `B diagnostic runtime: HHD3/HHD5 handshake NOT seen; A embedded B ${embeddedBLength} bytes; ${new Date().toLocaleTimeString()}`;
+    if (!flashCommandSent) {
+      const temporaryA = embeddedBLength === 48980 || embeddedBLength >= 50000;
+      const stableRestore = allowStableBRestore && embeddedBLength === 48332;
+      flashBSideButton.disabled = !listeningDevice?.opened || !(temporaryA || stableRestore);
+      flashBSideButton.textContent = stableRestore ? "Restore verified running B side" : "Flash embedded B side";
+      flashBSideStatus.textContent = stableRestore
+        ? "Verified baseline 48332-byte B image selected for restoration"
+        : temporaryA
+          ? `Temporary A embeds ${embeddedBLength} B bytes; ready to flash`
+          : `Embedded B is pinned or unidentified (${embeddedBLength} bytes); flash unavailable`;
+    }
+  }
+  if (eventCode !== 18 || data.getUint8(24) < 8 || data.getUint8(40) < 4) return;
+  const flags = data.getUint16(22, true);
+  const description = data.getUint8(7)
+    ? `address ${data.getUint8(7)}, instance ${data.getUint8(8)}; callbacks ${data.getUint32(25, true)}; arms ${data.getUint32(29, true)}; arm failures ${data.getUint32(41, true)}; pending ${Boolean(flags & 1)}; receive-ready ${Boolean(flags & 2)}`
+    : "G700s mouse input interface not registered on B";
+  g700Health.textContent = `B G700s endpoint: ${description}; ${new Date().toLocaleTimeString()}`;
+  recordCounterTimeline(`B G700s: ${description}`);
+}
+
 function addEvent(event) {
   const data = event.data;
   const bytes = [];
@@ -333,6 +457,7 @@ function addEvent(event) {
   if (data.byteLength < 24 ||
       String.fromCharCode(data.getUint8(0), data.getUint8(1), data.getUint8(2), data.getUint8(3)) !== "HHD1" ||
       ![1, 2].includes(data.getUint8(4))) return;
+  lastDiagnosticReportAt = Date.now();
   if (data.getUint8(5) === 0) {
     heartbeatCount++;
     heartbeat.textContent = `Heartbeat: ${heartbeatCount} received; last ${new Date().toLocaleTimeString()}`;
@@ -353,9 +478,10 @@ function addEvent(event) {
   outputCounters(data, eventCode);
   hcdSnapshot(data, eventCode);
   diagnosticTransport(data, eventCode);
+  compactBHealth(data, eventCode);
   // Heartbeats are only a transport-health indicator. Keep their counter and
   // timestamp above, but do not let them bury mount/report diagnostics.
-  if (eventCode === 0 || eventCode === 12 || eventCode === 13 || eventCode === 14 || eventCode === 15 || eventCode === 16) return;
+  if (eventCode === 0 || (eventCode >= 12 && eventCode <= 20)) return;
   const row = document.createElement("tr");
   const cells = [
     events[eventCode] || `unknown (${eventCode})`,
@@ -387,6 +513,105 @@ function addEvent(event) {
   while (tbody.children.length > 100) tbody.lastElementChild.remove();
 }
 
+function isConfigurationDevice(device) {
+  return device.collections.some(collection => collection.usagePage === 0xFF00 && collection.usage === 0x20);
+}
+
+function isSelectedConfigurationDevice(device) {
+  return selectedDeviceIdentity &&
+    device.vendorId === selectedDeviceIdentity.vendorId &&
+    device.productId === selectedDeviceIdentity.productId &&
+    isConfigurationDevice(device);
+}
+
+async function listenToDevice(device) {
+  if (!isConfigurationDevice(device)) throw new Error("Select the configuration HID collection (FF00/0020)");
+  if (listeningDevice && listeningDevice !== device) {
+    listeningDevice.removeEventListener("inputreport", addEvent);
+  }
+  if (!device.opened) await device.open();
+  device.removeEventListener("inputreport", addEvent);
+  device.addEventListener("inputreport", addEvent);
+  listeningDevice = device;
+  lastDiagnosticReportAt = Date.now();
+  heartbeatCount = 0;
+  heartbeat.textContent = "Heartbeat: waiting for reports from this connection";
+  lastReceived.textContent = "Last received report: none on this connection";
+  bRuntime.textContent = "B diagnostic runtime: waiting for this connection";
+  keyboardHealth.textContent = "B keyboard input: waiting for this connection";
+  inputG700Health.textContent = "B G700s input: waiting for this connection";
+  status.textContent = `Listening: ${device.productName || "HID device"}`;
+  flashBSideButton.disabled = true;
+  recordReconnectState("WebHID opened; listening for diagnostic reports");
+}
+
+async function reconnectPermittedDevice(device = null) {
+  if (!selectedDeviceIdentity || reconnectInProgress) return;
+  reconnectInProgress = true;
+  try {
+    const candidate = device && isSelectedConfigurationDevice(device)
+      ? device
+      : (await navigator.hid.getDevices()).find(isSelectedConfigurationDevice);
+    if (!candidate) {
+      recordReconnectState("getDevices: permitted configuration HID not present");
+      if (listeningDevice) {
+        listeningDevice.removeEventListener("inputreport", addEvent);
+        listeningDevice = null;
+        flashBSideButton.disabled = true;
+        status.textContent = "Disconnected; waiting for HID-Remapper";
+      }
+      return;
+    }
+    if (candidate === listeningDevice && candidate.opened) {
+      if (Date.now() - lastDiagnosticReportAt < 5000) return;
+      recordReconnectState("Diagnostic reports stale; reopening configuration HID");
+      candidate.removeEventListener("inputreport", addEvent);
+      await candidate.close();
+    }
+    recordReconnectState("getDevices/connect: permitted configuration HID found; opening");
+    await listenToDevice(candidate);
+  } catch (error) {
+    status.textContent = `Reconnect error: ${error.message}`;
+    recordReconnectState(`Reconnect error: ${error.message}`);
+  } finally {
+    reconnectInProgress = false;
+  }
+}
+
+function configCommandPacket(command) {
+  const packet = new Uint8Array(32);
+  packet[0] = 18; // config protocol version
+  packet[1] = command;
+  let crc = 0xffffffff;
+  for (let i = 0; i < 28; i++) {
+    crc ^= packet[i];
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  new DataView(packet.buffer).setUint32(28, (crc ^ 0xffffffff) >>> 0, true);
+  return packet;
+}
+
+flashBSideButton.addEventListener("click", async () => {
+  if (!listeningDevice?.opened) {
+    flashBSideStatus.textContent = "Connect to the temporary diagnostic A firmware first";
+    return;
+  }
+  flashBSideButton.disabled = true;
+  flashCommandSent = true;
+  flashBSideStatus.textContent = "Sending FLASH_B_SIDE; wait for completion before unplugging";
+  try {
+    await listeningDevice.sendFeatureReport(100, configCommandPacket(14));
+    flashBSideStatus.textContent = "FLASH_B_SIDE command sent; disconnect and reconnect HID-Remapper power";
+    recordConnection("FLASH_B_SIDE command sent");
+  } catch (error) {
+    flashBSideStatus.textContent = `FLASH_B_SIDE report error: ${error.message}; command may still have run`;
+    recordConnection(`FLASH_B_SIDE report error: ${error.message}`);
+  }
+  flashBSideButton.disabled = true;
+});
+
 document.querySelector("#connect").addEventListener("click", async () => {
   if (!navigator.hid) {
     status.textContent = "WebHID is unavailable; open this page in Chrome or Edge from localhost/HTTPS.";
@@ -399,13 +624,35 @@ document.querySelector("#connect").addEventListener("click", async () => {
     // select the configuration interface in the returned chooser.
     const [device] = await navigator.hid.requestDevice({ filters: [{ usagePage: 0xFF00 }] });
     if (!device) return;
-    device.addEventListener("inputreport", addEvent);
-    await device.open();
-    status.textContent = `Listening: ${device.productName || "HID device"}`;
+    await listenToDevice(device);
+    selectedDeviceIdentity = { vendorId: device.vendorId, productId: device.productId };
+    recordConnection(`Selected ${hex(device.vendorId, 4)}:${hex(device.productId, 4)} configuration HID`);
+    if (!reconnectTimer) {
+      reconnectTimer = setInterval(() => { void reconnectPermittedDevice(); }, 250);
+    }
   } catch (error) {
     status.textContent = `Error: ${error.message}`;
+    recordConnection(`Connect error: ${error.message}`);
   }
 });
+
+if (navigator.hid) {
+  navigator.hid.addEventListener("disconnect", event => {
+    if (selectedDeviceIdentity &&
+        event.device.vendorId === selectedDeviceIdentity.vendorId &&
+        event.device.productId === selectedDeviceIdentity.productId) {
+      recordConnection("WebHID disconnect event");
+      listeningDevice?.removeEventListener("inputreport", addEvent);
+      listeningDevice = null;
+      lastDiagnosticReportAt = 0;
+      status.textContent = "Disconnected; waiting for HID-Remapper";
+    }
+  });
+  navigator.hid.addEventListener("connect", async event => {
+    if (isSelectedConfigurationDevice(event.device)) recordConnection("WebHID connect event");
+    await reconnectPermittedDevice(event.device);
+  });
+}
 
 hcdBaselineButton.addEventListener("click", () => {
   if (!latestHcdSnapshot) return;
@@ -418,6 +665,9 @@ hcdBaselineButton.addEventListener("click", () => {
 // WebHID inputreport parser without changing production-page behavior.
 if (globalThis.__HID_HOST_DIAGNOSTICS_TEST__) {
   globalThis.__HID_HOST_DIAGNOSTICS_TEST__.addEvent = addEvent;
+  globalThis.__HID_HOST_DIAGNOSTICS_TEST__.expireReports = () => {
+    lastDiagnosticReportAt = Date.now() - 6000;
+  };
   globalThis.__HID_HOST_DIAGNOSTICS_TEST__.counterSnapshots = counterSnapshots;
   globalThis.__HID_HOST_DIAGNOSTICS_TEST__.usageCounterSnapshots = usageCounterSnapshots;
   globalThis.__HID_HOST_DIAGNOSTICS_TEST__.getLatestHcdSnapshot = () => latestHcdSnapshot;

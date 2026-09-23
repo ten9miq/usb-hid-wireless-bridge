@@ -11,6 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "firmware/artifacts/remapper_dual_combined-current-features-historical-embedded-b-ab.uf2"
 REFERENCE_SHA256 = "c144e09826bb9ebf63c989e08c0eee983a7b5a7acb63e729d3fd62686f05eac2"
+BEST_STABLE_REFERENCE = ROOT / "firmware/artifacts/remapper_dual_combined-verified-a-g700-queue64-only-candidate.uf2"
+BEST_STABLE_SHA256 = "8bc16d3d69b0ecd2149ac03a50e4256eb67357439fb081ce4def09e0ad6f6dd3"
+HISTORICAL_FAIR_SHA256 = "d4ef266ca7ba9abfcf83a83c3c68980e95dab825fe05941ecabb769a2f658980"
+HISTORICAL_FAIR_A_SHA256 = "f558f83028c2e94d1ab2abde149cd2b8dce6da71764f83be41c8c4133f354d00"
 EMBEDDED_B_ADDRESS = 0x1002ACD0  # dual_b_binary in the verified A-side image
 EMBEDDED_B_LENGTH = 48644
 EMBEDDED_B_SHA256 = "ad90682d9b0af74dc5bd8aa47c00874ad69158980d8d4b433e58aa06aa01d4e4"
@@ -192,9 +196,46 @@ def extract_a_uf2(output: Path) -> None:
           f"({len(blocks)} blocks, SHA256 {sha256(uf2)})")
 
 
-def verify(combined: Path, a_bin: Path, cache: Path) -> None:
+def verify(combined: Path, a_bin: Path, cache: Path,
+           wbt2_numeric_priority: bool = False,
+           suppress_23ub_numlock: bool = False,
+           native_keypad_dedup: bool = False) -> None:
     golden_b = pinned_embedded_b()
     check_cache(cache)
+    if suppress_23ub_numlock and not wbt2_numeric_priority:
+        raise ValueError("23UB NumLock suppression requires numeric priority mode")
+    if native_keypad_dedup and wbt2_numeric_priority:
+        raise ValueError("native keypad dedup requires normal NumLock-aware output")
+    if native_keypad_dedup:
+        cache_text = cache.read_text(encoding="utf-8")
+        if "NATIVE_KEYPAD_DEDUP:BOOL=ON" not in cache_text:
+            raise ValueError("NATIVE_KEYPAD_DEDUP must be ON")
+        if "WBT2_NUMERIC_KEYPAD_PRIORITY:BOOL=ON" in cache_text:
+            raise ValueError("numeric priority must be OFF")
+        if "WBT2_SUPPRESS_23UB_NUM_LOCK:BOOL=ON" in cache_text:
+            raise ValueError("23UB NumLock suppression must be OFF")
+    if wbt2_numeric_priority:
+        cache_text = cache.read_text(encoding="utf-8")
+        if "WBT2_NUMERIC_KEYPAD_PRIORITY:BOOL=ON" not in cache_text:
+            raise ValueError("WBT2_NUMERIC_KEYPAD_PRIORITY must be ON")
+        if suppress_23ub_numlock:
+            if "WBT2_SUPPRESS_23UB_NUM_LOCK:BOOL=ON" not in cache_text:
+                raise ValueError("WBT2_SUPPRESS_23UB_NUM_LOCK must be ON")
+        elif "WBT2_SUPPRESS_23UB_NUM_LOCK:BOOL=ON" in cache_text:
+            raise ValueError("WBT2_SUPPRESS_23UB_NUM_LOCK must not be ON")
+        stable = BEST_STABLE_REFERENCE.read_bytes()
+        if sha256(stable) != BEST_STABLE_SHA256:
+            raise ValueError("best-stable B reference hash changed")
+        _, stable_ram_blocks = parse_combined(stable)
+        expected_ram_sha256 = sha256(stable_ram_blocks)
+    elif native_keypad_dedup:
+        stable = BEST_STABLE_REFERENCE.read_bytes()
+        if sha256(stable) != BEST_STABLE_SHA256:
+            raise ValueError("best-stable B reference hash changed")
+        _, stable_ram_blocks = parse_combined(stable)
+        expected_ram_sha256 = sha256(stable_ram_blocks)
+    else:
+        expected_ram_sha256 = RUNTIME_B_SHA256
     candidate = combined.read_bytes()
     image, ram_blocks = parse_combined(candidate)
     binary = a_bin.read_bytes()
@@ -202,11 +243,31 @@ def verify(combined: Path, a_bin: Path, cache: Path) -> None:
         raise ValueError("A UF2 payload does not match the freshly built remapper_dual_a.bin")
     if image.count(golden_b) != 1:
         raise ValueError("A image does not contain exactly one pinned embedded B binary")
-    if sha256(ram_blocks) != RUNTIME_B_SHA256:
-        raise ValueError("B RAM stage differs from verified flash_b_side.uf2")
+    if sha256(ram_blocks) != expected_ram_sha256:
+        raise ValueError("B RAM stage differs from selected verified reference")
     print(f"PASS: combined SHA256 {sha256(candidate)}")
     print(f"PASS: A BIN prefix ({len(binary)} bytes), pinned embedded B, B RAM stage, UF2 block layout")
-    print("Hardware move-stop and keyboard checks are still required before release.")
+    if wbt2_numeric_priority:
+        print("EXPERIMENTAL: NumLock-OFF navigation is deferred; WBT2 numeric/operator and mouse checks remain")
+    else:
+        print("Hardware move-stop and keyboard checks are still required before release.")
+
+
+def verify_historical_fair(combined: Path) -> None:
+    # The archived UF2 was compared with a working device, but its original
+    # A-side ELF/BIN no longer exists. Pin the complete image and both stages
+    # instead of pretending a later rebuild is byte-identical.
+    candidate = combined.read_bytes()
+    if sha256(candidate) != HISTORICAL_FAIR_SHA256:
+        raise ValueError("historical fair-multi-input UF2 hash differs from the archived image")
+    image, ram_blocks = parse_combined(candidate)
+    if sha256(image) != HISTORICAL_FAIR_A_SHA256:
+        raise ValueError("historical fair A flash payload differs")
+    if sha256(ram_blocks) != RUNTIME_B_SHA256:
+        raise ValueError("historical fair B RAM stage differs")
+    print(f"PASS: historical fair combined SHA256 {sha256(candidate)}")
+    print(f"PASS: pinned A flash ({len(image)} bytes), B RAM stage, UF2 block layout")
+    print("ARCHIVED TRIAL: original A ELF/BIN unavailable; all input and mouse behavior needs hardware retest")
 
 
 def main() -> None:
@@ -222,8 +283,16 @@ def main() -> None:
     extract_a.add_argument("output", type=Path)
     check = sub.add_parser("verify", help="verify a candidate combined UF2 before flashing")
     check.add_argument("--combined", required=True, type=Path)
-    check.add_argument("--a-bin", required=True, type=Path)
-    check.add_argument("--cmake-cache", required=True, type=Path)
+    check.add_argument("--a-bin", type=Path)
+    check.add_argument("--cmake-cache", type=Path)
+    check.add_argument("--historical-fair", action="store_true",
+                       help="verify the exact archived D4EF fair-multi-input UF2")
+    check.add_argument("--wbt2-numeric-priority", action="store_true",
+                       help="verify the experimental numeric-first A with pinned best-stable B")
+    check.add_argument("--suppress-23ub-numlock", action="store_true",
+                       help="also require suppression of 23UB's local-sync NumLock input")
+    check.add_argument("--native-keypad-dedup", action="store_true",
+                       help="verify normal NumLock-aware A with keypad dedup and best-stable B")
     args = parser.parse_args()
     if args.command == "extract-b-hex":
         extract_hex(args.output)
@@ -234,7 +303,16 @@ def main() -> None:
     elif args.command == "extract-a-uf2":
         extract_a_uf2(args.output)
     else:
-        verify(args.combined, args.a_bin, args.cmake_cache)
+        if args.historical_fair:
+            if args.wbt2_numeric_priority or args.suppress_23ub_numlock or args.native_keypad_dedup:
+                parser.error("--historical-fair cannot be combined with experimental flags")
+            verify_historical_fair(args.combined)
+        else:
+            if args.a_bin is None or args.cmake_cache is None:
+                parser.error("--a-bin and --cmake-cache are required for newly built firmware")
+            verify(args.combined, args.a_bin, args.cmake_cache,
+                   args.wbt2_numeric_priority, args.suppress_23ub_numlock,
+                   args.native_keypad_dedup)
 
 
 if __name__ == "__main__":

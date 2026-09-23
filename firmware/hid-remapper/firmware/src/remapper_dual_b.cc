@@ -27,6 +27,11 @@ struct hid_input_state_t {
     bool report_pending;
     uint16_t len;
     uint8_t report[CFG_TUH_HID_EPIN_BUFSIZE];
+#ifdef HID_HOST_DIAGNOSTICS
+    uint32_t callbacks;
+    uint32_t arms;
+    uint32_t arm_failures;
+#endif
 };
 
 static hid_input_state_t hid_input_states[CFG_TUH_HID];
@@ -93,6 +98,7 @@ static const uint64_t HID_HOST_DIAGNOSTIC_REPORT_COUNTERS_US = 1000000;
 static const uint8_t HID_HOST_DIAGNOSTIC_MAX_REPORT_COUNTERS = 8;
 static uint64_t next_hid_host_hcd_snapshot = 0;
 static uint64_t next_hid_host_diagnostic_transport_snapshot = 0;
+static uint64_t next_g700_health_probe = 0;
 // Keep the latest HCD snapshot outside the ordinary diagnostic FIFO.  HID
 // reports may keep that FIFO blocked indefinitely, while A needs this record
 // to service its heartbeat-priority event-15 input report.
@@ -390,6 +396,8 @@ static void queue_hid_host_hcd_snapshot() {
         snapshot.claimed_mask = hcd.claimed_mask;
         snapshot.active_mask = hcd.active_mask;
         snapshot.busy_mask = hcd.busy_mask;
+        uint32_t queue_drops = usbh_diagnostic_queue_drop_count();
+        memcpy(snapshot.reserved, &queue_drops, sizeof(queue_drops));
     }
 
     memcpy(&pending_hid_host_hcd_snapshot.diagnostic, &snapshot, sizeof(snapshot));
@@ -471,6 +479,31 @@ static void service_hid_host_priority_diagnostics() {
     }
 }
 
+static void send_g700_health_probe() {
+    uint64_t now = time_us_64();
+    if (now < next_g700_health_probe) return;
+
+    dual_b_g700_health_t probe = {};
+    for (const hid_input_state_t& state : hid_input_states) {
+        if (!state.active) continue;
+        uint16_t vid = 0;
+        uint16_t pid = 0;
+        if (!tuh_vid_pid_get(state.dev_addr, &vid, &pid) ||
+            vid != 0x046d || pid != 0xc07c) continue;
+        if (probe.dev_addr != 0 && state.instance >= probe.instance) continue;
+        probe.dev_addr = state.dev_addr;
+        probe.instance = state.instance;
+        probe.flags = (state.report_pending ? 1u : 0u) |
+                      (tuh_hid_receive_ready(state.dev_addr, state.instance) ? 2u : 0u);
+        probe.callbacks = state.callbacks;
+        probe.arms = state.arms;
+        probe.arm_failures = state.arm_failures;
+    }
+
+    bool sent = serial_write_nonblocking((const uint8_t*) &probe, sizeof(probe));
+    next_g700_health_probe = now + (sent ? 1000000 : 250000);
+}
+
 extern "C" void tuh_diagnostic_event_cb(
     uint8_t event,
     uint8_t dev_addr,
@@ -513,8 +546,13 @@ extern "C" void tuh_diagnostic_event_cb(
 #endif
 
 static bool arm_hid_report(uint8_t dev_addr, uint8_t instance) {
+#ifdef HID_HOST_DIAGNOSTICS
+    hid_input_state_t* state = find_hid_input_state(dev_addr, instance);
+    if (state != nullptr) state->arms++;
+#endif
     bool armed = tuh_hid_receive_report(dev_addr, instance);
 #ifdef HID_HOST_DIAGNOSTICS
+    if (!armed && state != nullptr) state->arm_failures++;
     send_hid_host_diagnostic(HidHostDiagnosticEvent::RECEIVE_ARM, dev_addr, instance, armed);
 #endif
     return armed;
@@ -590,8 +628,13 @@ bool serial_callback(const uint8_t* data, uint16_t len) {
 }
 
 void request_b_init() {
+#ifdef HID_HOST_DIAGNOSTICS
+    const uint8_t marker[] = {static_cast<uint8_t>(DualCommand::REQUEST_B_INIT), 'H', 'H', 'D', '5'};
+    serial_write_nonblocking(marker, sizeof(marker));
+#else
     request_b_init_t msg;
     serial_write_nonblocking((uint8_t*) &msg, sizeof(msg));
+#endif
 }
 
 static bool send_hid_report(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
@@ -669,6 +712,7 @@ int main() {
         // queued HID reports can consume it again.  The helper's shared
         // period and pending state prevent same-loop duplicate records.
         service_hid_host_priority_diagnostics();
+        send_g700_health_probe();
 #endif
         // Give reports which previously hit backpressure first use of the
         // remaining space before tuh_task() can deliver another report from
@@ -717,6 +761,9 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
     if (state == nullptr) {
         return;
     }
+#ifdef HID_HOST_DIAGNOSTICS
+    state->callbacks++;
+#endif
 
     // Once any interface has hit UART backpressure, route every newly
     // completed interface through the same per-interface pending set.  A

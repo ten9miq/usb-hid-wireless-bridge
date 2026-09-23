@@ -42,6 +42,7 @@ enum class HidHostDiagnosticEvent : uint8_t {
     B_RUNTIME_IDENTITY = 17,
     B_G700_ENDPOINT_HEALTH = 18,
     B_FLASH_LOADER_STATUS = 19,
+    B_INPUT_ENDPOINT_HEALTH = 20,
 };
 
 // A-side watchdog scratch registers survive the RAM B-loader's reboot.
