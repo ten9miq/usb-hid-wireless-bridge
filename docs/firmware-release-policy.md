@@ -1,12 +1,34 @@
 # HID-Remapper dual firmware の回帰防止ルール
 
-最終更新: 2026-09-23
+最終更新: 2026-10-11
 
-## 現時点の最安定運用版（2026-09-23）
+## 現在の運用版（2026-10-11）
+
+`firmware/artifacts/remapper_dual_combined-startup-numlock-sync-test.uf2`
+（SHA-256 `0118755803E93F9E163069FC9388BE87DE7DCAC0D3B511B32DC2550366D6A1CE`）を、
+ユーザーの明示指定により現在の運用版として記録する。ファイル名の`test`はそのまま保持し、
+書き込んで確認したバイト列を変更しない。基準はnative-keypad-dedup＋completion-reserve版。
+RealForce 23UBとUSB接続の準備後、NumLock二回操作を起動ごとに一度だけ自動送信する。
+
+ユーザーはWBT2経由で電源を入れ直し、F12・物理NumLockを押さずに00入力ができること、
+既存の数字・記号・NumLock操作、RollerMouseとG700sも問題なく動作することを報告した。
+この報告範囲の実機確認をPASSとする。別途のPC直結試験、JIS各キー、
+移動→停止や再接続の具体的な反復回数、NumLock二組のRaw Inputは未記録であり、
+その項目まで検証済みとは記載しない。運用版指定は必須試験全項目の完了宣言とは分ける。
+
+2026-10-11にrelease gateを再実行してPASSを確認した。変更OFFのAは基準版と完全一致、
+変更ONのA object差分は`remapper.cc`だけで、実行Bは基準UF2と同一。
+自動動作に追加Mappingは不要。F12試験用Mappingは削除でき、保存マクロの時間設定にも依存しない。
+A埋込みBと実行Bの不一致は残るため`Flash B Side`は押さず、復元は結合UF2を使う。
+基準版と従来の動作確認済みUF2は上書き・削除せず復元用に保持する。
+生成・書き込み・実機報告の詳細は`docs/2026-10-11-startup-numlock-sync-test.md`、
+生成条件とハッシュは同名artifactの`.json`に記録する。以降の節は過去の試験・運用履歴である。
+
+## 従来の運用・復元版（2026-09-23）
 
 `firmware/artifacts/remapper_dual_combined-verified-a-g700-queue64-only-candidate.uf2`
 （SHA-256 `8BC16D3D69B0ECD2149AC03A50E4256EB67357439FB081CE4DEF09E0AD6F6DD3`）を
-現在の実機運用・復元用の**最安定版**として固定する。A側Flashは下記の従来版と
+当時の実機運用・復元用の**最安定版**として選定した記録を保持する。A側Flashは下記の従来版と
 バイト単位で同じであり、実行B側のUSBホストイベントキュー容量だけを
 16件から64件へ増やした。SOF通知集約と一つずつのエンドポイント公平化は無効。
 
@@ -258,6 +280,23 @@ A埋込みB/実行Bの不一致という保守課題を整理する前に、こ�
 `tools/apply-host-completion-reserve.py`で今回の3ファイル差分と前後ハッシュを
 固定した。ただしpre-reserveのTinyUSB source自体はGit管理外のため、
 新規checkoutからの完全再ビルドにはそのベース依存関係の固定が残る。
+
+## 2026-10-11: 起動時NumLock二重タップ版（運用版採用・報告範囲PASS）
+
+`firmware/artifacts/remapper_dual_combined-startup-numlock-sync-test.uf2`
+（SHA-256 `0118755803E93F9E163069FC9388BE87DE7DCAC0D3B511B32DC2550366D6A1CE`）は、
+実機確認済みのnative-keypad-dedup＋completion-reserve候補を基準に、
+A側へ`STARTUP_NUMLOCK_SYNC=ON`だけを追加した。RealForce 23UBとUSBホストの接続後に
+待機し、NumLock DOWN/UPを二組、FW一回の起動につき一度だけ出力する。
+変更OFFのA BINは基準と完全一致し、ONとの差は`remapper.cc` objectだけ。
+実行Bは基準UF2から抽出して固定し、埋込みBも従来の検証済みデータを維持した。
+`verify --native-keypad-dedup --startup-numlock-sync`と起動制御のhost側testはPASS。
+書き込みと実機試験は未実施であり、00復旧や既存入力・マウス動作の成功は未確認。
+詳細とMappingの扱いは`docs/2026-10-11-startup-numlock-sync-test.md`に記録する。
+その後GドライブのRP2ブートローダー確認とrelease gate PASS後に候補を書き込み、
+Gドライブ消失を確認。ユーザーはWBT2経由で電源を入れ直し、F12も物理NumLockも
+押さずに00入力ができたと報告した。起動時00復旧は報告された試行でPASS。
+NumLockのRaw Input、反復回数、既存キー・マウスの回帰確認は未記録。
 
 ## 未解決課題: A側の埋込みBと実行Bを一致させる
 

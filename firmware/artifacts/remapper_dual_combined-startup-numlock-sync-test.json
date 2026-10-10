@@ -1,0 +1,113 @@
+{
+  "created_jst": "2026-10-11T00:12:23.046399+09:00",
+  "reference": "firmware\\artifacts\\remapper_dual_combined-native-keypad-dedup-completion-reserve-test.uf2",
+  "reference_sha256": "72cce415bfcbf8e5023aa40cb307dcdc3a552c511f6af3f9ec90cb0ae98a224f",
+  "combined": "firmware\\artifacts\\remapper_dual_combined-startup-numlock-sync-test.uf2",
+  "combined_sha256": "0118755803e93f9e163069fc9388be87de7dcac0d3b511b32dc2550366d6a1ce",
+  "baseline_off_a_sha256": "c0d5d64ffda4304c2e3329c63ac46bc437c73b05fedb94d792037401891efff6",
+  "a_bin_sha256": "881383e801c8be643d71659008462bba2b9eccc7bdad5cde2070c66612539fc3",
+  "a_flash_sha256": "8016876bf06a01a0a1f28d68c057e76dddecfca7228ed18fec99e1f02b68f74e",
+  "runtime_b_uf2_sha256": "817bf14dd73a99e625d29fdc006114b938590090d2b241f8b535d57220dcd7e1",
+  "embedded_b_sha256": "ad90682d9b0af74dc5bd8aa47c00874ad69158980d8d4b433e58aa06aa01d4e4",
+  "source_date_epoch": 1790121600,
+  "changed_a_objects": [
+    "src\\remapper.cc.obj"
+  ],
+  "source_backup": "backups\\backups_20261011_001209",
+  "historical_source_hashes": {
+    "verified-a-source.cc": "1fc263fbbfd261068617106f75b13f0bf92c6e95cc5efe32a7c39e6ac0619ded",
+    "verified-a-flash.c": "114cceb43bc7fdb896ca5dbce7682df250a3f4c3f993dd374ead672042a7afe4"
+  },
+  "configure_arguments": [
+    "cmake",
+    "-S",
+    "C:\\Users\\ruin_\\Documents\\ChatGPT\\usb-hid-wireless-bridge\\firmware\\hid-remapper\\firmware",
+    "-B",
+    "C:\\Users\\ruin_\\Documents\\ChatGPT\\usb-hid-wireless-bridge\\firmware\\hid-remapper\\firmware\\build-startup-numlock-sync",
+    "-G",
+    "Ninja",
+    "-DPython3_EXECUTABLE=C:\\Users\\ruin_\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "-DCMAKE_C_FLAGS=-mcpu=cortex-m0plus -mthumb -mfloat-abi=soft -ftls-model=local-exec -g -O3 -DNDEBUG",
+    "-DCMAKE_CXX_FLAGS=-mcpu=cortex-m0plus -mthumb -mfloat-abi=soft -ftls-model=local-exec -g -O3 -DNDEBUG",
+    "-DCMAKE_C_COMPILER=C:/ProgramData/chocolatey/lib/gcc-arm-embedded/tools/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-gcc.exe",
+    "-DCMAKE_CXX_COMPILER=C:/ProgramData/chocolatey/lib/gcc-arm-embedded/tools/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-g++.exe",
+    "-DPICO_BOARD=remapper_v7",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DPICO_NO_PICOTOOL=ON",
+    "-DALT_NUMPAD_EQUALS=ON",
+    "-DNATIVE_KEYPAD_DEDUP=ON",
+    "-DWBT2_NUMERIC_KEYPAD_PRIORITY=OFF",
+    "-DWBT2_SUPPRESS_23UB_NUM_LOCK=OFF",
+    "-DHID_HOST_DIAGNOSTICS=OFF",
+    "-DMOUSE_PIPELINE_TRACE=OFF",
+    "-DSTABLE_A_C436_BASELINE=OFF",
+    "-DSTABLE_CONSUMER_DESCRIPTOR=OFF",
+    "-DSTABLE_MOUSE_BUTTON_DESCRIPTOR=OFF",
+    "-DLEGACY_RELATIVE_AGGREGATION=OFF",
+    "-DDUAL_A_SERIAL_DRAIN_LIMIT=1",
+    "-DDUAL_A_SOURCE_OVERRIDE=C:\\Users\\ruin_\\Documents\\ChatGPT\\usb-hid-wireless-bridge\\backups\\backups_20261011_001209\\verified-a-source.cc",
+    "-DDUAL_A_FLASH_SOURCE_OVERRIDE=C:\\Users\\ruin_\\Documents\\ChatGPT\\usb-hid-wireless-bridge\\backups\\backups_20261011_001209\\verified-a-flash.c",
+    "-DDUAL_B_BINARY_OVERRIDE=C:\\Users\\ruin_\\Documents\\ChatGPT\\usb-hid-wireless-bridge\\firmware\\hid-remapper\\firmware\\build-startup-numlock-sync\\pinned-embedded-b.hex",
+    "-DSTARTUP_NUMLOCK_SYNC=ON"
+  ],
+  "static_checks": "PASS",
+  "hardware_tests": "PASS_REPORTED_SCOPE",
+  "flashed": true,
+  "flash_record": {
+    "time_jst": "2026-10-11T00:35:21.489028+09:00",
+    "target": "G:",
+    "bootloader": "UF2 Bootloader v3.0 / Raspberry Pi RP2 / RPI-RP2",
+    "copy_completed": true,
+    "g_drive_present_after_copy": false,
+    "usb_enumeration": "NOT_RUN",
+    "hardware_input_tests": "NOT_RUN"
+  },
+  "startup_00_test": {
+    "recorded_jst": "2026-10-11T00:46:56.614839+09:00",
+    "source": "user report",
+    "connection": "WBT2-V4",
+    "power_cycled": true,
+    "physical_numlock_pressed": false,
+    "f12_pressed": false,
+    "keypad_00_input": "PASS",
+    "raw_input_numlock_sequence": "NOT_RECORDED",
+    "repeat_count": "NOT_RECORDED",
+    "other_keyboard_and_mouse_regressions": "PASS_USER_REPORTED_SCOPE"
+  },
+  "status": "OPERATING",
+  "operating_release": {
+    "recorded_jst": "2026-10-11T00:49:23.800526+09:00",
+    "authorization": "explicit user request",
+    "evidence": "user report",
+    "confirmed": [
+      "automatic keypad 00 recovery without F12 or physical NumLock after WBT2 power cycle",
+      "existing digits",
+      "existing symbols",
+      "NumLock operations",
+      "RollerMouse operation",
+      "G700s operation"
+    ],
+    "separate_pc_direct_trial": "NOT_RECORDED",
+    "jis_individual_keys": "NOT_RECORDED",
+    "repeat_counts": "NOT_RECORDED",
+    "all_formal_release_checks_complete": false
+  },
+  "additional_device_flashes": [
+    {
+      "time_jst": "2026-10-11T00:51:35.197879+09:00",
+      "device": "another HID-Remapper identified by user",
+      "target": "G:",
+      "bootloader": "UF2 Bootloader v3.0 / Raspberry Pi RP2 / RPI-RP2",
+      "release_gate": "PASS",
+      "copy_completed": true,
+      "g_drive_present_after_copy": false,
+      "device_serial": "NOT_RECORDED",
+      "usb_enumeration": "NOT_RUN",
+      "hardware_input_tests": "NOT_RUN"
+    }
+  ],
+  "historical_source_inputs": {
+    "verified-a-source.cc": "tools\\firmware-baselines\\verified-a-source.cc",
+    "verified-a-flash.c": "tools\\firmware-baselines\\verified-a-flash.c"
+  }
+}

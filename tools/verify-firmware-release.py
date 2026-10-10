@@ -13,6 +13,8 @@ REFERENCE = ROOT / "firmware/artifacts/remapper_dual_combined-current-features-h
 REFERENCE_SHA256 = "c144e09826bb9ebf63c989e08c0eee983a7b5a7acb63e729d3fd62686f05eac2"
 BEST_STABLE_REFERENCE = ROOT / "firmware/artifacts/remapper_dual_combined-verified-a-g700-queue64-only-candidate.uf2"
 BEST_STABLE_SHA256 = "8bc16d3d69b0ecd2149ac03a50e4256eb67357439fb081ce4def09e0ad6f6dd3"
+KEYPAD_RESERVE_REFERENCE = ROOT / "firmware/artifacts/remapper_dual_combined-native-keypad-dedup-completion-reserve-test.uf2"
+KEYPAD_RESERVE_SHA256 = "72cce415bfcbf8e5023aa40cb307dcdc3a552c511f6af3f9ec90cb0ae98a224f"
 HISTORICAL_FAIR_SHA256 = "d4ef266ca7ba9abfcf83a83c3c68980e95dab825fe05941ecabb769a2f658980"
 HISTORICAL_FAIR_A_SHA256 = "f558f83028c2e94d1ab2abde149cd2b8dce6da71764f83be41c8c4133f354d00"
 EMBEDDED_B_ADDRESS = 0x1002ACD0  # dual_b_binary in the verified A-side image
@@ -131,9 +133,20 @@ def extract_hex(output: Path) -> None:
     print(f"extracted pinned B HEX: {output} ({len(blob)} bytes, SHA256 {sha256(blob)})")
 
 
-def extract_b_uf2(output: Path) -> None:
-    _, ram_blocks = parse_combined(checked_reference())
-    if sha256(ram_blocks) != RUNTIME_B_SHA256:
+def checked_keypad_reserve() -> bytes:
+    data = KEYPAD_RESERVE_REFERENCE.read_bytes()
+    if sha256(data) != KEYPAD_RESERVE_SHA256:
+        raise ValueError("verified keypad/completion-reserve reference hash changed")
+    image, _ = parse_combined(data)
+    if image.count(pinned_embedded_b()) != 1:
+        raise ValueError("keypad/completion-reserve reference embedded B differs")
+    return data
+
+
+def extract_b_uf2(output: Path, keypad_completion_reserve: bool = False) -> None:
+    reference = checked_keypad_reserve() if keypad_completion_reserve else checked_reference()
+    _, ram_blocks = parse_combined(reference)
+    if not keypad_completion_reserve and sha256(ram_blocks) != RUNTIME_B_SHA256:
         raise ValueError("B RAM stage in the verified reference is inconsistent")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(ram_blocks)
@@ -199,9 +212,15 @@ def extract_a_uf2(output: Path) -> None:
 def verify(combined: Path, a_bin: Path, cache: Path,
            wbt2_numeric_priority: bool = False,
            suppress_23ub_numlock: bool = False,
-           native_keypad_dedup: bool = False) -> None:
+           native_keypad_dedup: bool = False,
+           startup_numlock_sync: bool = False) -> None:
     golden_b = pinned_embedded_b()
     check_cache(cache)
+    if startup_numlock_sync:
+        if not native_keypad_dedup or wbt2_numeric_priority or suppress_23ub_numlock:
+            raise ValueError("startup sync requires the verified native-keypad baseline")
+        if "STARTUP_NUMLOCK_SYNC:BOOL=ON" not in cache.read_text(encoding="utf-8"):
+            raise ValueError("STARTUP_NUMLOCK_SYNC must be ON")
     if suppress_23ub_numlock and not wbt2_numeric_priority:
         raise ValueError("23UB NumLock suppression requires numeric priority mode")
     if native_keypad_dedup and wbt2_numeric_priority:
@@ -236,6 +255,9 @@ def verify(combined: Path, a_bin: Path, cache: Path,
         expected_ram_sha256 = sha256(stable_ram_blocks)
     else:
         expected_ram_sha256 = RUNTIME_B_SHA256
+    if startup_numlock_sync:
+        _, reference_ram = parse_combined(checked_keypad_reserve())
+        expected_ram_sha256 = sha256(reference_ram)
     candidate = combined.read_bytes()
     image, ram_blocks = parse_combined(candidate)
     binary = a_bin.read_bytes()
@@ -247,6 +269,8 @@ def verify(combined: Path, a_bin: Path, cache: Path,
         raise ValueError("B RAM stage differs from selected verified reference")
     print(f"PASS: combined SHA256 {sha256(candidate)}")
     print(f"PASS: A BIN prefix ({len(binary)} bytes), pinned embedded B, B RAM stage, UF2 block layout")
+    if startup_numlock_sync:
+        print("PASS: startup sync enabled; verified keypad/completion-reserve runtime B unchanged")
     if wbt2_numeric_priority:
         print("EXPERIMENTAL: NumLock-OFF navigation is deferred; WBT2 numeric/operator and mouse checks remain")
     else:
@@ -277,6 +301,8 @@ def main() -> None:
     extract.add_argument("output", type=Path)
     extract_ram = sub.add_parser("extract-b-uf2", help="recreate the pinned flash_b_side.uf2")
     extract_ram.add_argument("output", type=Path)
+    extract_ram.add_argument("--keypad-completion-reserve", action="store_true",
+                             help="extract the runtime B from the verified keypad/queue-reserve UF2")
     extract_running_b = sub.add_parser("extract-runtime-b-hex", help="recreate the verified running B HEX")
     extract_running_b.add_argument("output", type=Path)
     extract_a = sub.add_parser("extract-a-uf2", help="recreate the verified A-only UF2")
@@ -293,18 +319,20 @@ def main() -> None:
                        help="also require suppression of 23UB's local-sync NumLock input")
     check.add_argument("--native-keypad-dedup", action="store_true",
                        help="verify normal NumLock-aware A with keypad dedup and best-stable B")
+    check.add_argument("--startup-numlock-sync", action="store_true",
+                       help="verify startup NumLock sync A with the verified keypad/queue-reserve B")
     args = parser.parse_args()
     if args.command == "extract-b-hex":
         extract_hex(args.output)
     elif args.command == "extract-b-uf2":
-        extract_b_uf2(args.output)
+        extract_b_uf2(args.output, args.keypad_completion_reserve)
     elif args.command == "extract-runtime-b-hex":
         extract_runtime_b_hex(args.output)
     elif args.command == "extract-a-uf2":
         extract_a_uf2(args.output)
     else:
         if args.historical_fair:
-            if args.wbt2_numeric_priority or args.suppress_23ub_numlock or args.native_keypad_dedup:
+            if args.wbt2_numeric_priority or args.suppress_23ub_numlock or args.native_keypad_dedup or args.startup_numlock_sync:
                 parser.error("--historical-fair cannot be combined with experimental flags")
             verify_historical_fair(args.combined)
         else:
@@ -312,7 +340,7 @@ def main() -> None:
                 parser.error("--a-bin and --cmake-cache are required for newly built firmware")
             verify(args.combined, args.a_bin, args.cmake_cache,
                    args.wbt2_numeric_priority, args.suppress_23ub_numlock,
-                   args.native_keypad_dedup)
+                   args.native_keypad_dedup, args.startup_numlock_sync)
 
 
 if __name__ == "__main__":

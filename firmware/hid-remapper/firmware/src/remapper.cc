@@ -19,6 +19,10 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
+#ifdef STARTUP_NUMLOCK_SYNC
+#include "startup_numlock_sync.h"
+#include "tusb.h"
+#endif
 
 #define MAX_REPORT_SIZE 64
 
@@ -106,6 +110,38 @@ struct macro_entry_t {
 };
 
 std::queue<macro_entry_t> macro_queue;
+
+#ifdef STARTUP_NUMLOCK_SYNC
+static StartupNumLockSync startup_numlock_sync;
+static bool startup_realforce_devices[256] = {};
+static uint16_t startup_realforce_count = 0;
+
+static void queue_startup_numlock_sync(uint64_t now) {
+    // Only the standard keyboard output is supported. Inspect the current
+    // mapped report so an already-held key/modifier postpones initialization.
+    bool keyboard_idle = false;
+    if (our_descriptor->idx == 0 && report_sizes[2] == 8) {
+        keyboard_idle = true;
+        for (uint8_t i = 0; i < 8; i++) {
+            if (reports[2][i] != 0) {
+                keyboard_idle = false;
+                break;
+            }
+        }
+    }
+    if (startup_numlock_sync.should_start(
+            now, tud_mounted() && !tud_suspended(), startup_realforce_count != 0,
+            keyboard_idle, macro_queue.empty() && or_items == 0 && tud_hid_n_ready(0))) {
+        // Match the successful manual macro: DOWN/UP/DOWN/UP, 200 mapping
+        // frames each. The engine adds one frame to duration_left. This is
+        // independent of saved macros, mappings and macro_entry_duration.
+        macro_queue.push((macro_entry_t){ duration_left : 199, items : { NUM_LOCK_USAGE } });
+        macro_queue.push((macro_entry_t){ duration_left : 199, items : {} });
+        macro_queue.push((macro_entry_t){ duration_left : 199, items : { NUM_LOCK_USAGE } });
+        macro_queue.push((macro_entry_t){ duration_left : 199, items : {} });
+    }
+}
+#endif
 
 uint32_t reports_received;
 uint32_t reports_sent;
@@ -1995,6 +2031,9 @@ void process_mapping(bool auto_repeat) {
     }
 #endif
 
+#ifdef STARTUP_NUMLOCK_SYNC
+    queue_startup_numlock_sync(now);
+#endif
     // execute queued macros
     if (!macro_queue.empty()) {
         for (uint32_t usage : macro_queue.front().items) {
@@ -3194,6 +3233,12 @@ void set_monitor_enabled(bool enabled) {
 
 void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, uint8_t hub_port) {
     hub_ports[interface >> 8] = (hub_port != 0) ? hub_port : HUB_PORT_NONE;
+#ifdef STARTUP_NUMLOCK_SYNC
+    if (vid == 0x0853 && pid == 0x0117 && !startup_realforce_devices[interface >> 8]) {
+        startup_realforce_devices[interface >> 8] = true;
+        startup_realforce_count++;
+    }
+#endif
 #ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
     if (vid == 0x0853 && pid == 0x0117) {
         realforce_23ub_devices[interface >> 8] = true;
@@ -3205,6 +3250,12 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
 }
 
 void device_disconnected_callback(uint8_t dev_addr) {
+#ifdef STARTUP_NUMLOCK_SYNC
+    if (startup_realforce_devices[dev_addr]) {
+        startup_realforce_devices[dev_addr] = false;
+        startup_realforce_count--;
+    }
+#endif
 #ifdef WBT2_SUPPRESS_23UB_NUM_LOCK
     realforce_23ub_devices[dev_addr] = false;
 #endif

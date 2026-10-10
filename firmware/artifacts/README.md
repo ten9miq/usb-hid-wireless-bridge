@@ -1,5 +1,19 @@
 # ビルド成果物
 
+## 現在の運用版（2026-10-11）
+
+[`remapper_dual_combined-startup-numlock-sync-test.uf2`](remapper_dual_combined-startup-numlock-sync-test.uf2)
+をユーザー確認に基づく運用版とする。試験時のファイル名とバイト列を保持している。
+SHA-256: `0118755803E93F9E163069FC9388BE87DE7DCAC0D3B511B32DC2550366D6A1CE`
+
+WBT2経由の電源再投入後にF12・物理NumLockなしで00入力が復旧し、既存の数字・記号・
+NumLock操作とRollerMouse/G700sの正常動作をユーザーが確認した。
+自動NumLockはFW内部で起動ごとに一度だけ実行し、追加Mappingは不要。
+実行Bは検証済みnative-keypad-dedup＋completion-reserve版と同一。
+A埋込みBと実行Bは異なるため`Flash B Side`は押さない。
+以前のUF2は復元用に保持する。確認した範囲と未記録項目は
+[`運用・試験記録`](../../docs/2026-10-11-startup-numlock-sync-test.md)を参照する。
+
 ## 2026-09-23 動作確認済みの直結版
 
 `remapper_dual_combined-current-features-historical-embedded-b-ab.uf2`

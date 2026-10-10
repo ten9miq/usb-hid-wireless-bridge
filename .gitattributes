@@ -1,0 +1,4 @@
+# Preserve hash-pinned historical build inputs byte for byte, including their
+# original comment whitespace. Normal project sources retain default checks.
+tools/firmware-baselines/verified-a-source.cc -text whitespace=-trailing-space
+tools/firmware-baselines/verified-a-flash.c -text whitespace=-trailing-space
